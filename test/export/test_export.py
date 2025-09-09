@@ -217,12 +217,15 @@ TRAINING_IR_DECOMP_STRICT_SUFFIX = "_training_ir_to_decomp_strict"
 TRAINING_IR_DECOMP_NON_STRICT_SUFFIX = "_training_ir_to_decomp_nonstrict"
 CPP_RUNTIME_STRICT_SUFFIX = "_cpp_runtime_strict"
 CPP_RUNTIME_NONSTRICT_SUFFIX = "_cpp_runtime_nonstrict"
+STRICT_EXPORT_V2_SUFFIX = "_strict_export_v2"
 
 
 # Now default mode is non strict, so original unammended test names
 # should be treated as non-strict
 def is_non_strict_test(test_name):
-    return not test_name.endswith(STRICT_SUFFIX)
+    return not test_name.endswith(STRICT_SUFFIX) and not test_name.endswith(
+        STRICT_EXPORT_V2_SUFFIX
+    )
 
 
 def is_inline_and_install_strict_test(test_name: str) -> bool:
@@ -11764,6 +11767,7 @@ graph():
         self.assertEqual(ep.module()(3, 5), 8)
         self.assertEqual(ep.module()(5, 4), 9)
 
+    @testing.expectedFailureStrictV2  # ValueError: Found conflicts between user-specified and inferred ranges
     def test_dynamic_shapes_bounds(self):
         class M(torch.nn.Module):
             """
@@ -12070,6 +12074,8 @@ graph():
 
         test(export(M(), inp))
 
+    # Preserving signature hook is messing with dynamo tracing
+    @testing.expectedFailureStrictV2
     def test_unflatten_multiple_graphs_state(self):
         class N(torch.nn.Module):
             def __init__(self):
@@ -13688,7 +13694,7 @@ def forward(self, x, y):
 
         inputs = (torch.randn(10, 72),)
         dx, dy = dims("dx", "dy")
-        ep = torch.export.export(
+        ep = torch.export._trace._export(
             Mod4Reshape(),
             inputs,
             dynamic_shapes={"x": (dx, dy)},
@@ -15374,6 +15380,7 @@ class GraphModule(torch.nn.Module):
         )
 
     @testing.expectedFailureStrict  # test_hop doesn't have a dynamo implementation
+    @testing.expectedFailureStrictV2  # test_hop doesn't have a dynamo implementation
     @testing.expectedFailureRetraceability  # test_hop doesn't have a dynamo implementation
     @testing.expectedFailureTrainingIRToRunDecomp  # test_hop doesn't have a dynamo implementation
     @testing.expectedFailureSerDerNonStrict  # TODO: serde torch.FunctionSchema is not implemented yet
