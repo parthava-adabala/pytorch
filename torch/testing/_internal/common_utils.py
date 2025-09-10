@@ -996,7 +996,7 @@ def wait_for_process(p, timeout=None):
     try:
         return p.wait(timeout=timeout)
     except KeyboardInterrupt:
-        print("timeout 1", flush=True)
+        print("timeout 1")
         # Give `p` a chance to handle KeyboardInterrupt. Without this,
         # `pytest` can't print errors it collected so far upon KeyboardInterrupt.
         exit_status = p.wait(timeout=120)
@@ -1007,7 +1007,7 @@ def wait_for_process(p, timeout=None):
             raise
     except subprocess.TimeoutExpired:
         # send SIGINT to give pytest a chance to make xml
-        print("timeout 1.5", flush=True)
+        print("timeout 1.5")
         p.send_signal(signal.SIGINT)
         exit_status = None
         try:
@@ -1016,6 +1016,8 @@ def wait_for_process(p, timeout=None):
         # otherwise the wait() call in the finally block can potentially hang
         except subprocess.TimeoutExpired:
             print("timeout 2", flush=True)
+            p.send_signal(signal.SIGINT)
+            exit_status = p.wait(timeout=120)
         if exit_status is not None:
             return exit_status
         else:
