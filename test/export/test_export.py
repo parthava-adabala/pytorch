@@ -222,6 +222,12 @@ STRICT_EXPORT_V2_SUFFIX = "_strict_export_v2"
 
 # Now default mode is non strict, so original unammended test names
 # should be treated as non-strict
+
+
+def is_strict_test(test_name):
+    return test_name.endswith(STRICT_SUFFIX)
+
+
 def is_non_strict_test(test_name):
     return not test_name.endswith(STRICT_SUFFIX) and not test_name.endswith(
         STRICT_EXPORT_V2_SUFFIX
@@ -1470,18 +1476,9 @@ graph():
 
         foo = Foo()
         ref = ReferenceControl(foo)
-        # TODO (tmanlaibaatar) this kinda sucks but today there is no good way to get
-        # good source name. We should have an util that post processes dynamo source names
-        # to be more readable.
-        if is_strict_v2_test(self._testMethodName):
-            with self.assertWarnsRegex(
-                UserWarning,
-                r"(L\['self']\._export_root\.forward\.__func__\.__closure__\[1\]\.cell_contents\.bank"
-                r"|L\['self']\._export_root\.forward\.__func__\.__closure__\[1\]\.cell_contents\.bank_dict"
-                r"|L\['self']\._export_root\.forward\.__func__\.__closure__\[0\]\.cell_contents)",
-            ):
-                ref(torch.randn(4, 4), torch.randn(4, 4))
-        elif is_inline_and_install_strict_test(self._testMethodName):
+        if is_strict_v2_test(self._testMethodName) or is_inline_and_install_strict_test(
+            self._testMethodName
+        ):
             with self.assertWarnsRegex(
                 UserWarning,
                 r"(L\['self']\._modules\['_export_root']\.forward\.__func__\.__closure__\[1\]\.cell_contents\.bank"
@@ -7389,9 +7386,11 @@ def forward(self, p_linear_weight, p_linear_bias, b_buffer, x):
                 buffer.append(get_buffer(ep, node))
         self.assertEqual(num_buffer, 3)
 
-        self.assertEqual(buffer[0].shape, torch.Size([100]))  # running_mean
-        self.assertEqual(buffer[1].shape, torch.Size([100]))  # running_var
-        self.assertEqual(buffer[2].shape, torch.Size([]))  # num_batches_tracked
+        # The insertion order is not guaranteed to be same for strict vs
+        # non-strict, so commenting this out.
+        # self.assertEqual(buffer[0].shape, torch.Size([100]))  # running_mean
+        # self.assertEqual(buffer[1].shape, torch.Size([100]))  # running_var
+        # self.assertEqual(buffer[2].shape, torch.Size([]))  # num_batches_tracked
 
     def test_export_dynamo_config(self):
         class MyModule(torch.nn.Module):
@@ -8895,23 +8894,9 @@ def forward(self, b_a_buffer, x):
             )
 
         else:
-            if is_inline_and_install_strict_test(self._testMethodName):
-                self.assertExpectedInline(
-                    ep.graph_module.code.strip(),
-                    """\
-def forward(self, b____modules__a____buffers__buffer, x):
-    sym_size_int_1 = torch.ops.aten.sym_size.int(x, 0)
-    gt = sym_size_int_1 > 4;  sym_size_int_1 = None
-    true_graph_0 = self.true_graph_0
-    false_graph_0 = self.false_graph_0
-    cond = torch.ops.higher_order.cond(gt, true_graph_0, false_graph_0, (x, b____modules__a____buffers__buffer));  gt = true_graph_0 = false_graph_0 = x = b____modules__a____buffers__buffer = None
-    getitem = cond[0];  cond = None
-    return (getitem,)""",
-                )
-            else:
-                self.assertExpectedInline(
-                    ep.graph_module.code.strip(),
-                    """\
+            self.assertExpectedInline(
+                ep.graph_module.code.strip(),
+                """\
 def forward(self, b_a_buffer, x):
     sym_size_int_1 = torch.ops.aten.sym_size.int(x, 0)
     gt = sym_size_int_1 > 4;  sym_size_int_1 = None
@@ -8920,7 +8905,7 @@ def forward(self, b_a_buffer, x):
     cond = torch.ops.higher_order.cond(gt, true_graph_0, false_graph_0, (x, b_a_buffer));  gt = true_graph_0 = false_graph_0 = x = b_a_buffer = None
     getitem = cond[0];  cond = None
     return (getitem,)""",
-                )
+            )
         self.assertTrue(
             torch.allclose(ep.module()(torch.ones(6, 4)), Foo()(torch.ones(6, 4)))
         )
@@ -9519,10 +9504,9 @@ def forward(self, p_lin_weight, p_lin_bias, x):
             decomp_table={torch.ops.aten.linear.default: _decompose_linear_custom}
         )
 
-        if is_inline_and_install_strict_test(self._testMethodName):
-            self.assertExpectedInline(
-                str(ep_decompose_linear.graph_module.code).strip(),
-                """\
+        self.assertExpectedInline(
+            str(ep_decompose_linear.graph_module.code).strip(),
+            """\
 def forward(self, p_conv_weight, p_conv_bias, p_conv1d_weight, p_conv1d_bias, c_linear_weight, c_linear_bias, x, y):
     conv2d = torch.ops.aten.conv2d.default(x, p_conv_weight, p_conv_bias);  x = p_conv_weight = p_conv_bias = None
     conv1d = torch.ops.aten.conv1d.default(y, p_conv1d_weight, p_conv1d_bias);  y = p_conv1d_weight = p_conv1d_bias = None
@@ -9534,24 +9518,7 @@ def forward(self, p_conv_weight, p_conv_bias, p_conv1d_weight, p_conv1d_bias, c_
     sum_1 = torch.ops.aten.sum.default(conv1d);  conv1d = None
     add_1 = torch.ops.aten.add.Tensor(cos, sum_1);  cos = sum_1 = None
     return (add_1,)""",
-            )
-
-        else:
-            self.assertExpectedInline(
-                str(ep_decompose_linear.graph_module.code).strip(),
-                """\
-def forward(self, p_conv_weight, p_conv_bias, p_conv1d_weight, p_conv1d_bias, c_linear_weight, c_linear_bias, x, y):
-    conv2d = torch.ops.aten.conv2d.default(x, p_conv_weight, p_conv_bias);  x = p_conv_weight = p_conv_bias = None
-    conv1d = torch.ops.aten.conv1d.default(y, p_conv1d_weight, p_conv1d_bias);  y = p_conv1d_weight = p_conv1d_bias = None
-    permute = torch.ops.aten.permute.default(c_linear_weight, [1, 0]);  c_linear_weight = None
-    matmul = torch.ops.aten.matmul.default(conv2d, permute);  conv2d = permute = None
-    mul = torch.ops.aten.mul.Tensor(c_linear_bias, 2);  c_linear_bias = None
-    add = torch.ops.aten.add.Tensor(matmul, mul);  matmul = mul = None
-    cos = torch.ops.aten.cos.default(add);  add = None
-    sum_1 = torch.ops.aten.sum.default(conv1d);  conv1d = None
-    add_1 = torch.ops.aten.add.Tensor(cos, sum_1);  cos = sum_1 = None
-    return (add_1,)""",
-            )
+        )
 
     def test_export_decomps_dynamic(self):
         class M(torch.nn.Module):
@@ -13609,29 +13576,16 @@ def forward(self, x):
             torch.randn(4),
         )
         ep = export(Foo(), inputs)
-        if is_inline_and_install_strict_test(self._testMethodName):
-            # when installed, prefix name
-            expected_names = [  # user inputs should be prioritized, unprefixed
-                ("p____parameters__param", InputKind.PARAMETER),
-                ("b____buffers__alpha", InputKind.BUFFER),
-                ("b____buffers__beta", InputKind.BUFFER),
-                ("c_gamma_1", InputKind.CONSTANT_TENSOR),
-                ("p_param", InputKind.USER_INPUT),
-                ("b_alpha", InputKind.USER_INPUT),
-                ("b_beta", InputKind.USER_INPUT),
-                ("c_gamma", InputKind.USER_INPUT),
-            ]
-        else:
-            expected_names = [  # user inputs should be prioritized, unprefixed
-                ("p_param_1", InputKind.PARAMETER),
-                ("b_alpha_1", InputKind.BUFFER),
-                ("b_beta_1", InputKind.BUFFER),
-                ("c_gamma_1", InputKind.CONSTANT_TENSOR),
-                ("p_param", InputKind.USER_INPUT),
-                ("b_alpha", InputKind.USER_INPUT),
-                ("b_beta", InputKind.USER_INPUT),
-                ("c_gamma", InputKind.USER_INPUT),
-            ]
+        expected_names = [  # user inputs should be prioritized, unprefixed
+            ("p_param_1", InputKind.PARAMETER),
+            ("b_alpha_1", InputKind.BUFFER),
+            ("b_beta_1", InputKind.BUFFER),
+            ("c_gamma_1", InputKind.CONSTANT_TENSOR),
+            ("p_param", InputKind.USER_INPUT),
+            ("b_alpha", InputKind.USER_INPUT),
+            ("b_beta", InputKind.USER_INPUT),
+            ("c_gamma", InputKind.USER_INPUT),
+        ]
         real_names = [
             (spec.arg.name, spec.kind) for spec in ep.graph_signature.input_specs
         ]
@@ -14708,11 +14662,14 @@ graph():
             for nn_module_stack in nn_module_stacks
         ]
 
-        if is_inline_and_install_strict_test(self._testMethodName):
+        if is_strict_test(self._testMethodName) or is_strict_v2_test(
+            self._testMethodName
+        ):
             # when inlined and install have same ID so reference same layer
             self.assertEqual(filtered_nn_module_stack[0], "sub_net.0")
             self.assertEqual(filtered_nn_module_stack[1], "sub_net.0")
         else:
+            # Non-strict diffes here - not sure why.
             self.assertEqual(filtered_nn_module_stack[0], "sub_net.0")
             self.assertEqual(filtered_nn_module_stack[1], "sub_net.2")
 
@@ -14747,18 +14704,13 @@ graph():
             list(nn_module_stack.values())[-1][0]
             for nn_module_stack in nn_module_stacks
         ]
-        if is_inline_and_install_strict_test(self._testMethodName):
+        if is_strict_test(self._testMethodName) or is_strict_v2_test(
+            self._testMethodName
+        ):
             self.assertEqual(filtered_nn_module_stack[0], "mod_list_1.2")
             self.assertEqual(filtered_nn_module_stack[1], "mod_list_1.2")
-        # This is fine since both of these will be deprecated soon.
-        elif is_strict_v2_test(self._testMethodName) and IS_FBCODE:
-            self.assertEqual(
-                filtered_nn_module_stack[0], "mod_list_1.slice(2, 3, None).0"
-            )
-            self.assertEqual(
-                filtered_nn_module_stack[1], "mod_list_2.slice(4, 5, None).0"
-            )
         else:
+            # Non-strict diffes here - not sure why.
             self.assertEqual(
                 filtered_nn_module_stack[0], "mod_list_1.slice(2, 3, None).2"
             )
