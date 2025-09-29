@@ -1836,8 +1836,10 @@ def select(x, dim, idx):
             # Additionally, we want to avoid accidental unbacked unsqueeze semantics. To resolve this,
             # we use as_strided instead.
             # Removing this branch will cause test_unbacked_select_index_with_check to fail.
+            x.realize()
             new_size = x.get_size()
             new_stride = x.get_stride()
+
             new_storage_offset = x.get_layout().offset + new_stride[dim] * actual_index
 
             del new_size[dim]
@@ -1857,7 +1859,7 @@ def select(x, dim, idx):
     assert unbacked_bindings is not None
     assert len(unbacked_bindings) == 1, unbacked_bindings
     unbacked_offset_sym, _ = next(iter(unbacked_bindings.items()))
-
+    x.realize()
     new_size = x.get_size()
     new_stride = x.get_stride()
     new_storage_offset = unbacked_offset_sym
