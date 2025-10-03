@@ -353,13 +353,10 @@ texinfo_documents = [
     ),
 ]
 
+
 # Function to run Exhale for each chunk
 def setup(app):
     from exhale import setup as exhale_setup
-    from breathe import setup as breathe_setup
-
-    # Initialize Breathe first
-    breathe_setup(app)
 
     for chunk in exhale_args_chunks:
         # Update breathe_project for this chunk
