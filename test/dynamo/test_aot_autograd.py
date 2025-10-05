@@ -910,7 +910,7 @@ SeqNr|OrigAten|SrcFn|FwdSrcFn
 7|aten.view.default||linear
 6|aten.t.default||linear
 5|aten.view.default||linear
-4|aten.view.default||
+4|aten.view.default||flatten
 2|aten.detach.default||relu
 2|aten.detach.default||relu
 2|aten.threshold_backward.default||relu
