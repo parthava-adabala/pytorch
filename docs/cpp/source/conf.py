@@ -155,16 +155,22 @@ exhale_args_chunks = [
         **exhale_args,
         "containmentFolder": "./api/aten",
         "rootFileName": "aten_root.rst",
+        "rootFileTitle": "ATen API",
+        "breatheProjects": {"ATen": breathe_projects["ATen"]},
     },
     {
         **exhale_args,
         "containmentFolder": "./api/c10",
         "rootFileName": "c10_root.rst",
+        "rootFileTitle": "C10 API",
+        "breatheProjects": {"C10": breathe_projects["C10"]},
     },
     {
         **exhale_args,
         "containmentFolder": "./api/csrc",
         "rootFileName": "csrc_root.rst",
+        "rootFileTitle": "CSRC API",
+        "breatheProjects": {"CSRC": breathe_projects["CSRC"]},
     },
 ]
 
@@ -359,7 +365,4 @@ def setup(app):
     from exhale import setup as exhale_setup
 
     for chunk in exhale_args_chunks:
-        # Update breathe_project for this chunk
-        chunk_name = chunk["rootFileTitle"].split()[0]  # e.g., "ATen"
-        chunk["breatheProjects"] = {chunk_name: breathe_projects[chunk_name]}
         exhale_setup(app, chunk)
