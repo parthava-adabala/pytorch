@@ -1381,6 +1381,10 @@ class TestDeserialize(TestCase):
             def forward(self, x):
                 y = x.nonzero()
                 z = y.size(0)
+<<<<<<< HEAD
+=======
+                torch._check_is_nonnegative(z)
+>>>>>>> 03c0797d322 (tmp)
                 torch._check(z == 2)
                 return y
 
@@ -1391,6 +1395,10 @@ class TestDeserialize(TestCase):
             def forward(self, x):
                 y = x.nonzero()
                 z = y.size(0)
+<<<<<<< HEAD
+=======
+                torch._check_is_nonnegative(z)
+>>>>>>> 03c0797d322 (tmp)
                 torch._check(z % 3 == 0)
                 torch._check(z == 3)
                 return y
@@ -1674,7 +1682,11 @@ def forward(self, x):
         class Module(torch.nn.Module):
             def forward(self, x, y):
                 n = x.item()
+<<<<<<< HEAD
                 torch._check(n >= 0)
+=======
+                torch._check_is_nonnegative(n)
+>>>>>>> 03c0797d322 (tmp)
                 return y.sum() + torch.ones(n, 5).sum()
 
         f = Module()
