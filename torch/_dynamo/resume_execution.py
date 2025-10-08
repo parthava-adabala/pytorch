@@ -523,7 +523,7 @@ class ContinueExecutionCache:
                             "STORE_FAST", argval=IS_TRACING_RESUME_PROLOGUE_VARNAME
                         ),
                         # finish the call
-                        *create_call_function_ex(False),
+                        *create_call_function_ex(False, False),
                     ]
                 )
             else:
