@@ -173,7 +173,7 @@ class StreamContextVariable(ContextWrappingVariable):
 
     def _target_stream_proxies(self) -> tuple[Proxy, Proxy]:
         return StreamContextVariable._extract_stream_properties(
-            self.target_values[0].as_proxy()
+            self._get_target_values()[0].as_proxy()
         )
 
     @staticmethod
@@ -201,6 +201,15 @@ class StreamContextVariable(ContextWrappingVariable):
         )
         return current_stream
 
+    def _get_target_values(self) -> list["StreamVariable"]:
+        # We need this to be overridable, since StreamVariable does
+        # not store target values (it does not require any arguments)
+        # and captures the current stream at the time of entering the context
+        return self.target_values
+
+    def supports_graph_breaks(self) -> bool:
+        return True
+
 
 class StreamVariable(StreamContextVariable):
     """Represents the device-agnostic torch.Stream class"""
@@ -217,9 +226,7 @@ class StreamVariable(StreamContextVariable):
         assert value.device.type == device.type, (
             "stream value is not equal to the passed device"
         )
-        super().__init__(
-            target_values=[self], initial_values=None, device=device, **kwargs
-        )
+        super().__init__(target_values=[], initial_values=None, device=device, **kwargs)
         self.proxy = proxy
         self.value = value
         self.device = device
@@ -281,17 +288,22 @@ class StreamVariable(StreamContextVariable):
         return super().call_method(tx, name, args, kwargs)
 
     def enter(self, tx: "InstructionTranslator") -> "VariableTracker":
-        # NB: Set initial values and target values when we enter
+        # NB: Set initial values when we enter
         # Don't do this at object creation, as we need to record the current stream
         # at the time the context is entered.
         self.initial_values = [
             StreamContextVariable._get_current_stream(self.device, tx)
         ]
-        self.target_values = [self]
         return super().enter(tx)
 
     def as_proxy(self) -> Proxy:
         return self.proxy
+
+    def module_name(self) -> str:
+        return "torch._C"
+
+    def fn_name(self) -> str:
+        return "Stream"
 
     def reconstruct(self, codegen: "PyCodegen") -> None:
         # If we got here, this stream is fully subsumed by the graph - this means it is
@@ -306,6 +318,9 @@ class StreamVariable(StreamContextVariable):
         prefix = f"_stream_{self.device}"
         name = codegen.tx.output.install_global_by_id(prefix, self.value)
         codegen.append_output(codegen.create_load_global(name, add=True))
+
+    def _get_target_values(self) -> list["StreamVariable"]:
+        return [self]
 
 
 class EventVariable(VariableTracker):
