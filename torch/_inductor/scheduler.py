@@ -4598,6 +4598,7 @@ class Scheduler:
 
     def free_buffers(self) -> None:
         """Free any buffers that are no longer needed"""
+        # breakpoint()
         for name in sorted(
             self.buffer_names_to_free
             - V.graph.removed_buffers
@@ -5442,6 +5443,7 @@ class Scheduler:
             V.graph.wrapper_code.write_get_raw_stream_header()
 
         for node in nodes:
+            # breakpoint()
             if log.isEnabledFor(logging.DEBUG):
                 try:
                     log.debug(
@@ -5475,37 +5477,45 @@ class Scheduler:
                         V.graph.wrapper_code.codegen_device_guard_enter(device.index)
 
             self.current_node = node
-            self.buffer_names_to_free.update(node.last_usage)
 
-            if node.is_template():
-                prologue, template_node, epilogue = node.get_prologue_template_epilogue(
-                    list(node.get_nodes())
-                )
-                # pyrefly: ignore  # unbound-name
-                self.get_backend(device).codegen_template(
-                    template_node, epilogue, prologue
-                )
-            elif node.is_extern():
-                node = typing.cast(ExternKernelSchedulerNode, node)
-                self.codegen_extern_call(node)
-            elif node.is_foreach():
-                node = typing.cast(ForeachKernelSchedulerNode, node)
-                # pyrefly: ignore  # unbound-name
-                backend_ = self.get_backend(device)
-                from .codegen.cuda_combined_scheduling import CUDACombinedScheduling
-                from .codegen.simd import SIMDScheduling
+            def wrap_codegen_node(w):
+                curr_node = node
+                self.buffer_names_to_free.update(curr_node.last_usage)
+                if node.is_template():
+                    prologue, template_node, epilogue = node.get_prologue_template_epilogue(
+                        list(node.get_nodes())
+                    )
+                    # pyrefly: ignore  # unbound-name
+                    self.get_backend(device).codegen_template(
+                        template_node, epilogue, prologue
+                    )
+                elif node.is_extern():
+                    curr_node = typing.cast(ExternKernelSchedulerNode, curr_node)
+                    self.codegen_extern_call(curr_node)
+                elif node.is_foreach():
+                    curr_node = typing.cast(ForeachKernelSchedulerNode, curr_node)
+                    # pyrefly: ignore  # unbound-name
+                    backend_ = self.get_backend(device)
+                    from .codegen.cuda_combined_scheduling import CUDACombinedScheduling
+                    from .codegen.simd import SIMDScheduling
 
-                if isinstance(backend_, (SIMDScheduling, CUDACombinedScheduling)):
-                    backend = backend_
+                    if isinstance(backend_, (SIMDScheduling, CUDACombinedScheduling)):
+                        backend = backend_
+                    else:
+                        raise AssertionError(f"{type(self)=}")
+                    backend.codegen_combo_kernel(curr_node)
+                elif isinstance(node, (FusedSchedulerNode, SchedulerNode)):
+                    # pyrefly: ignore  # unbound-name
+                    self.get_backend(device).codegen_node(node)
                 else:
-                    raise AssertionError(f"{type(self)=}")
-                backend.codegen_combo_kernel(node)
-            elif isinstance(node, (FusedSchedulerNode, SchedulerNode)):
-                # pyrefly: ignore  # unbound-name
-                self.get_backend(device).codegen_node(node)
+                    assert isinstance(node, NopKernelSchedulerNode)
+                    node.mark_run()
+
+            from .codegen.wrapper import DualWrapperCodegen
+            if isinstance(V.graph.wrapper_code, DualWrapperCodegen):
+                V.graph.wrapper_code.for_each_wrapper(wrap_codegen_node)
             else:
-                assert isinstance(node, NopKernelSchedulerNode)
-                node.mark_run()
+                wrap_codegen_node(V.graph.wrapper_code)
 
             # pyrefly: ignore  # unbound-name
             if config.triton.debug_sync_kernel:
