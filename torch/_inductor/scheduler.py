@@ -187,16 +187,6 @@ class SchedulerBuffer:
                 input_buffer,
                 self.node,
             )
-        else:
-            V.graph.wrapper_code.codegen_allocation(self.node)
-
-    def can_free(self) -> bool:
-        # There's no real allocated buffer, no need to free it
-        assert self.node is not None
-        if isinstance(self.node.layout, ir.NoneLayout) or is_multi_outputs_template(
-            self.node
-        ):
-            return False
         for use in self.users:
             if isinstance(use.node, OutputNode):
                 return False
@@ -4353,6 +4343,14 @@ class Scheduler:
         corresponding writes in node1, or are written by nodes that can
         be scheduled before the fusion of node1 and node2.
         """
+<<<<<<< HEAD
+=======
+        # Check for custom op epilogue fusion opportunities first
+        if self._can_apply_custom_op_epilogue_fusion(node1, node2):
+            fusion_log.debug("Custom op epilogue fusion applicable for %s -> %s",
+                           node1.get_first_name(), node2.get_first_name())
+            return True
+>>>>>>> 7baadf1678a (initial code)
 
         node1_buf_names = node1.get_buffer_names()
         why = WhyNoFuse(node1, node2)
@@ -4396,6 +4394,42 @@ class Scheduler:
                 return False
 
         return True
+
+    def _can_apply_custom_op_epilogue_fusion(
+        self, node1: BaseSchedulerNode, node2: BaseSchedulerNode
+    ) -> bool:
+        """Check if custom op epilogue fusion can be applied between two nodes.
+
+        Args:
+            node1: Producer node (potential custom op result)
+            node2: Consumer node (potential epilogue operation)
+
+        Returns:
+            bool: True if custom op epilogue fusion is applicable
+        """
+        # Check if global config enables custom op epilogue fusion
+        from torch._inductor import config
+        if not config.enable_custom_op_epilogue_fusion:
+            return False
+
+        # Check if node1 is marked as a custom op result eligible for epilogue fusion
+        if (hasattr(node1, 'node') and hasattr(node1.node, 'data') and
+            hasattr(node1.node.data, '_custom_op_fusion_metadata')):
+
+            metadata = node1.node.data._custom_op_fusion_metadata
+            if metadata.get('epilogue_fusion_enabled', False):
+
+                # Check if node2 is a suitable epilogue operation
+                if (node2.is_pointwise() and
+                    not node2.is_reduction() and
+                    not node2.has_aliasing_or_mutation()):
+
+                    fusion_log.info("Custom op epilogue fusion enabled for %s -> %s (custom_op: %s)",
+                                  node1.get_first_name(), node2.get_first_name(),
+                                  metadata.get('custom_op_name', 'unknown'))
+                    return True
+
+        return False
 
     def fusable_weak_dep(
         self, weak_dep: WeakDep, node1: BaseSchedulerNode, node2: BaseSchedulerNode

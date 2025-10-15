@@ -225,8 +225,6 @@ def autotune_custom_op(
         dict[str, Callable[[torch.Tensor], torch.Tensor]]
     ] = None,
     enable_epilogue_fusion: bool = False,
-    enable_prologue_fusion: bool = False,
-    disable_fallback: bool = False,
 ) -> Union[TensorBox, Any]:
     """Autotune custom operations by comparing multiple decomposition implementations.
 
@@ -325,95 +323,31 @@ def autotune_custom_op(
         input_gen_fns=input_gen_fns,
     )
 
-    # Apply inlining if epilogue fusion is enabled
+    # Mark result for custom op epilogue fusion if enabled
     if enable_epilogue_fusion and isinstance(selected_result, TensorBox):
-        # Find the winning choice that was selected during autotuning
-        winning_choice = None
-
-        # TODO: find selected_result's choice and pass for inline.
-        winning_choice = choices[0]
-        inlined_result = _inline_custom_op_choice(winning_choice, inputs, name)
-        return inlined_result
+        _mark_custom_op_for_epilogue_fusion(selected_result, name)
 
     return selected_result
 
 
-def _inline_custom_op_choice(
-    winning_choice: Any, inputs: list[Any], name: str
-) -> TensorBox:
-    """Inline the winning custom op choice by converting its FX operations to individual IR nodes.
-
-    This converts the custom op from a single ExternKernel (unfusable) to multiple ComputedBuffer
-    nodes (fusable), enabling epilogue fusion with subsequent operations.
+def _mark_custom_op_for_epilogue_fusion(result: TensorBox, name: str) -> None:
+    """Mark the result for custom op epilogue fusion by the scheduler.
 
     Args:
-        winning_choice: The winning SubgraphChoiceCaller from autotuning
-        inputs: Original input nodes
-        name: Custom op name for debugging
-
-    Returns:
-        TensorBox containing the final operation result as individual IR nodes
+        result: The autotuning result to mark
+        name: Operation name for identification
     """
-    from torch._inductor.lowering import lowerings
+    if hasattr(result, "data") and hasattr(result.data, "get_name"):
+        # Mark this buffer as a custom op result eligible for epilogue fusion
+        if not hasattr(result.data, "_custom_op_fusion_metadata"):
+            result.data._custom_op_fusion_metadata = {}
 
-    # Get the GraphModule containing the operations
-    gm = winning_choice.gm
-
-    # Create a temporary graph lowering context to process the FX nodes
-    # We'll extract the operations and add them to the current graph
-    current_graph = V.graph  # noqa: F841
-
-    # Create mapping from placeholder nodes to actual inputs
-    node_to_value = {}
-    placeholder_idx = 0
-
-    # Process each node in the winning choice's graph
-    for node in gm.graph.nodes:
-        if node.op == "placeholder":
-            # Map placeholder to actual input
-            if placeholder_idx < len(inputs):
-                node_to_value[node] = inputs[placeholder_idx]
-                placeholder_idx += 1
-            else:
-                raise RuntimeError(f"Not enough inputs for placeholder {node.name}")
-
-        elif node.op == "call_function":
-            # Convert FX operation to IR nodes using existing lowerings
-            target = node.target
-            args = [
-                node_to_value[arg] if arg in node_to_value else arg for arg in node.args
-            ]
-            kwargs = {
-                k: node_to_value[v] if v in node_to_value else v
-                for k, v in node.kwargs.items()
+        result.data._custom_op_fusion_metadata.update(
+            {
+                "epilogue_fusion_enabled": True,
+                "custom_op_name": name,
             }
-
-            # Call the appropriate lowering function
-            if target in lowerings:
-                result = lowerings[target](*args, **kwargs)
-                node_to_value[node] = result
-            else:
-                # Fallback: try calling the target directly
-                result = target(*args, **kwargs)
-                node_to_value[node] = result
-
-        elif node.op == "output":
-            # Return the final result
-            output_arg = node.args[0]
-            if isinstance(output_arg, (list, tuple)):
-                # Multi-output case (not yet supported)
-                raise RuntimeError(
-                    "Multi-output custom ops not yet supported for inlining"
-                )
-            else:
-                # Single output case
-                final_result = node_to_value[output_arg]
-                return final_result
-
-        else:
-            raise RuntimeError(f"Unsupported node type: {node.op}")
-
-    raise RuntimeError("No output node found in custom op graph")
+        )
 
 
 def register_custom_op_autotuning(
@@ -487,8 +421,6 @@ def register_custom_op_autotuning(
             default_impl=custom_op,
             user_input_gen_fns=input_gen_fns,
             enable_epilogue_fusion=enable_epilogue_fusion,
-            enable_prologue_fusion=enable_prologue_fusion,
-            disable_fallback=disable_fallback,
         )
 
         validate_ir(result)
