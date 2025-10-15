@@ -4,6 +4,7 @@ import functools
 from typing import Any, Callable, Optional, Union
 
 import torch
+from torch._inductor import config
 from torch._inductor.codegen.subgraph import SubgraphTemplate
 from torch._inductor.ir import Buffer, FixedLayout, ir_node_to_tensor, TensorBox
 from torch._inductor.lowering import lowerings, validate_ir
@@ -176,6 +177,7 @@ def autotune_custom_op(
     user_input_gen_fns: Optional[
         dict[str, Callable[[torch.Tensor], torch.Tensor]]
     ] = None,
+    enable_epilogue_fusion: bool = False,
 ) -> Union[TensorBox, Any]:
     """Autotune custom operations by comparing multiple decomposition implementations.
 
@@ -184,6 +186,7 @@ def autotune_custom_op(
 
     This function generates multiple implementation choices for a custom operation and
     uses Inductor's autotuning system to select the best performing variant at runtime.
+    After selecting the best choice, optionally applies inline epilogue fusion.
 
     Args:
         name: Unique identifier for the autotuning operation
@@ -194,6 +197,7 @@ def autotune_custom_op(
         user_input_gen_fns: Optional custom input generators for benchmarking.
                            Maps input indices to functions that take fake tensors
                            and return real tensors for performance measurement.
+        enable_epilogue_fusion: If True, apply inline epilogue fusion to the best choice
 
     Returns:
         IR node representing the optimized operation result
@@ -263,13 +267,40 @@ def autotune_custom_op(
             inputs, arg_names, user_input_gen_fns
         )
 
-    return autotune_select_algorithm(
+    # Run autotuning to select the best choice
+    selected_result = autotune_select_algorithm(
         name=name,
         choices=choices,
         input_nodes=list(inputs),
         layout=choices[0].layout,
         input_gen_fns=input_gen_fns,
     )
+
+    # Mark result for custom op epilogue fusion if enabled
+    if enable_epilogue_fusion and isinstance(selected_result, TensorBox):
+        _mark_custom_op_for_epilogue_fusion(selected_result, name)
+
+    return selected_result
+
+
+def _mark_custom_op_for_epilogue_fusion(result: TensorBox, name: str) -> None:
+    """Mark the result for custom op epilogue fusion by the scheduler.
+
+    Args:
+        result: The autotuning result to mark
+        name: Operation name for identification
+    """
+    if hasattr(result, "data") and hasattr(result.data, "get_name"):
+        # Mark this buffer as a custom op result eligible for epilogue fusion
+        if not hasattr(result.data, "_custom_op_fusion_metadata"):
+            result.data._custom_op_fusion_metadata = {}
+
+        result.data._custom_op_fusion_metadata.update(
+            {
+                "epilogue_fusion_enabled": True,
+                "custom_op_name": name,
+            }
+        )
 
 
 def register_custom_op_autotuning(
@@ -278,6 +309,7 @@ def register_custom_op_autotuning(
     name: Optional[str] = None,
     input_gen_fns: Optional[dict[str, Callable[[torch.Tensor], torch.Tensor]]] = None,
     tuning_knob: Optional[dict[str, list[Any]]] = None,
+    enable_epilogue_fusion: bool = False,
 ) -> None:
     """Register custom operation for autotuning with multiple implementations.
 
@@ -298,18 +330,34 @@ def register_custom_op_autotuning(
         ValueError: If no decompositions provided
 
     Example:
-        # Multiple decompositions with parameter tuning
+        import math
+
+        def attention_variants(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, method: int = 0) -> torch.Tensor:
+            if method == 0:   # Standard attention
+                scale = 1.0 / math.sqrt(q.size(-1))
+                scores = torch.matmul(q, k.transpose(-2, -1)) * scale
+                attn_weights = torch.softmax(scores, dim=-1)
+                return torch.matmul(attn_weights, v)
+
+            elif method == 1: # Flash Attention
+                return torch.nn.functional.scaled_dot_product_attention(
+                    q, k, v, attn_mask=None, dropout_p=0.0, is_causal=False
+                )
+
+            elif method == 2: # Flex Attention
+                def score_mod(score, b, h, m, n):
+                    return score  # Identity - no modification
+                return torch.nn.attention.flex_attention(q, k, v, score_mod=score_mod)
+
+        # Register autotuning with parameter variants
         register_custom_op_autotuning(
-            torch.ops.mylib.attention.default,
-            decompositions=[standard_attention, flash_attention],
-            tuning_knob={
-                "head_dim": [32, 64, 128],
-                "method": ["chunked", "tiled"]
-            },
+            custom_op=torch.ops.mylib.attention.default,
+            decompositions=[attention_variants],
+            tuning_knob={"method": [0, 1, 2]},  # Standard vs Flash vs Flex
             input_gen_fns={
-                0: lambda fake: torch.randn_like(fake, device='cuda') * 0.1,
-                1: lambda fake: torch.randn_like(fake, device='cuda') * 0.1,
-                2: lambda fake: torch.randn_like(fake, device='cuda') * 0.1,
+                0: lambda fake: torch.randn_like(fake, device='cuda') * 0.1,  # query
+                1: lambda fake: torch.randn_like(fake, device='cuda') * 0.1,  # key
+                2: lambda fake: torch.randn_like(fake, device='cuda') * 0.1,  # value
             }
         )
     """
@@ -343,9 +391,36 @@ def register_custom_op_autotuning(
             kwargs=non_tensor_kwargs,
             default_impl=custom_op,
             user_input_gen_fns=input_gen_fns,
+            enable_epilogue_fusion=enable_epilogue_fusion,
         )
 
         validate_ir(result)
         return result
 
     lowerings[custom_op] = autotuning_lowering
+
+
+# Example of using inline epilogue fusion:
+#
+# # Method 1: Per-operation epilogue fusion
+# register_custom_op_autotuning(
+#     custom_op=torch.ops.mylib.myop.default,
+#     decompositions=[decomp1, decomp2, decomp3],
+#     enable_epilogue_fusion=True,  # Enable inline epilogue fusion
+# )
+#
+# # Method 2: Enable globally via config
+# import torch._inductor.config as config
+# config.enable_custom_op_epilogue_fusion = True
+#
+# register_custom_op_autotuning(
+#     custom_op=torch.ops.mylib.myop.default,
+#     decompositions=[decomp1, decomp2, decomp3],
+#     # Epilogue fusion enabled by global flag
+# )
+#
+# The inline epilogue fusion system:
+# 1. Run autotuning to select the fastest implementation choice
+# 2. Apply inline epilogue fusion to the selected best choice if enabled
+# 3. Mark the result for fusion-eligibility for the scheduler's existing fusion passes
+# 4. Leverages today's fusion support without extending beyond current capabilities

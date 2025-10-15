@@ -96,6 +96,9 @@ fx_graph_cache: bool = Config(
     default=True,
 )
 
+# Enable inline epilogue fusion for custom ops after selecting the best choice
+enable_custom_op_epilogue_fusion: bool = False
+
 remote_gemm_autotune_cache: bool = False
 
 # use remote fx aot graph codegen cache
