@@ -331,7 +331,7 @@ def _unpack_flash_attention_nested_shapes(
         assert cum_seq_q.shape == cum_seq_k.shape
         seq_q_lengths = _offsets_to_lengths(cum_seq_q, max_q)
         seq_k_lengths = _offsets_to_lengths(cum_seq_k, max_k)
-        for (seq_q_len, seq_k_len) in zip(seq_q_lengths, seq_k_lengths):
+        for (seq_q_len, seq_k_len) in zip(seq_q_lengths, seq_k_lengths, strict=True):
             new_query_shape = (1, h_q, seq_q_len, d_q)
             new_key_shape = (1, h_k, seq_k_len, d_k)
             new_value_shape = (1, h_v, seq_k_len, d_v)
@@ -379,7 +379,7 @@ def _unpack_efficient_attention_nested_shapes(
         assert cu_seqlens_q.shape == cu_seqlens_k.shape
         seqlens_q = _offsets_to_lengths(cu_seqlens_q, max_seqlen_q)
         seqlens_k = _offsets_to_lengths(cu_seqlens_k, max_seqlen_k)
-        for len_q, len_k in zip(seqlens_q, seqlens_k):
+        for len_q, len_k in zip(seqlens_q, seqlens_k, strict=True):
             new_query_shape = (1, h_q, len_q, d_q)
             new_key_shape = (1, h_k, len_k, d_k)
             new_value_shape = (1, h_v, len_k, d_v)
