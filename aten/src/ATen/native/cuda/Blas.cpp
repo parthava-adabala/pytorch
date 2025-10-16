@@ -307,6 +307,16 @@ static bool isGloballyDisabledAddmmCudaLt(const at::Device& device) {
  * Check whether for the given input we want to enable the Lt interface
  */
 static bool isInputCompliesAddmmCudaLt(Tensor& result, const Tensor& self, const Tensor& mat1, const Tensor& mat2, const Scalar& beta, const Scalar& alpha) {
+  #ifdef USE_ROCM
+  // Implies 2D bias which we currently not send through Lt.
+  // TODO: this check is done pre col-major input preparation,
+  // so, this condition can be ralexed in cases when a col-major
+  // copy of result is needed.
+  if (self.dim() == 2) {
+    return false;
+  }
+  #endif
+
   #if defined(USE_ROCM) && ROCM_VERSION == 60400
   // hipblaslt TT fp32 regression on ROCm 6.4, cannot use
   const auto args = cublasCommonArgs(mat1, mat2, result);
