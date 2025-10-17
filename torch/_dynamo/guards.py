@@ -2924,12 +2924,13 @@ class GuardBuilder(GuardBuilderBase):
         ):
             obj_ref = weakref.ref(guarded_object)
 
-        guard.set_export_info(
-            func_name,
-            guarded_object_type,
-            code_list,
-            obj_ref,
-        )
+        if self.check_fn_manager.output_graph.export:
+            guard.set_export_info(
+                func_name,
+                guarded_object_type,
+                code_list,
+                obj_ref,
+            )
 
 
 # Common Sub-Expression Elimination for Python expressions.

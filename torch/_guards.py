@@ -907,6 +907,7 @@ class TracingContext:
         self.global_context.global_state = {}
         self.previously_inlined_functions.clear()
         self.previously_cleaned_instructions.clear()
+        self.guards_context.dynamo_guards.inner = set()
 
     @staticmethod
     @contextmanager
