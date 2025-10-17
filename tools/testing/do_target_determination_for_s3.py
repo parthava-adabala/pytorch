@@ -38,7 +38,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--workflow-ref",
         type=str,
-        default=".github/workflows/pull.yml",
+        default="",
         help="Path to the GitHub workflow file to parse, this should correspond to github.workflow_ref in the github context",
     )
     args = parser.parse_args()
@@ -77,6 +77,15 @@ def main() -> None:
 
     test_prioritizations = aggregated_heuristics.get_aggregated_priorities()
 
+    recommended_cutoffs_per_job = test_prioritizations.get_recommended_cutoffs(job_info)
+
+    json_serialized_cutoffs = {
+        k: v.to_json() for k, v in recommended_cutoffs_per_job.items()
+    }
+
+    print("Recommended Cutoffs Per Job:")
+    print(json.dumps(json_serialized_cutoffs, indent=2))
+
     print("Aggregated Heuristics")
     print(test_prioritizations.get_info_str(verbose=False))
 
@@ -91,15 +100,6 @@ def main() -> None:
             "td_results_aggregated_heuristics",
             {"aggregated_heuristics": aggregated_heuristics.to_json()},
         )
-
-    recommended_cutoffs_per_job = test_prioritizations.get_recommended_cutoffs(job_info)
-
-    json_serialized_cutoffs = {
-        k: v.to_json() for k, v in recommended_cutoffs_per_job.items()
-    }
-
-    print("Recommended Cutoffs Per Job:")
-    print(json.dumps(json_serialized_cutoffs, indent=2))
 
     with open(REPO_ROOT / "td_results.json", "w") as f:
         f.write(json.dumps(json_serialized_cutoffs, indent=2))
