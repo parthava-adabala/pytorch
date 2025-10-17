@@ -2074,9 +2074,15 @@ class FakeTensorMode(TorchDispatchMode):
         """
         Reinitializes all weakref memos
         """
-        self.fake_tensor_converter.meta_converter.tensor_memo = weakref.WeakValueDictionary()
-        self.fake_tensor_converter.meta_converter.describer.lookup_tensor = WeakIdKeyDictionary()
-        self.fake_tensor_converter.meta_converter.describer.lookup_storage = WeakIdKeyDictionary()
+        self.fake_tensor_converter.meta_converter.tensor_memo = (
+            weakref.WeakValueDictionary()
+        )
+        self.fake_tensor_converter.meta_converter.describer.lookup_tensor = (
+            WeakIdKeyDictionary()
+        )
+        self.fake_tensor_converter.meta_converter.describer.lookup_storage = (
+            WeakIdKeyDictionary()
+        )
 
     def dispatch(
         self,

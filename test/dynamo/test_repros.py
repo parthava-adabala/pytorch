@@ -102,6 +102,7 @@ if HAS_OMEGACONG:
 
 HAS_CUDA = torch.cuda.is_available()
 
+
 def exists(val):
     return val is not None
 
@@ -7933,7 +7934,9 @@ class ReproTestsDevice(torch._dynamo.test_case.TestCase):
 
         class Subclass(torch.Tensor):
             def __new__(cls, data):
-                return torch.Tensor._make_wrapper_subclass(cls, data.shape, dtype=data.dtype, device=data.device)
+                return torch.Tensor._make_wrapper_subclass(
+                    cls, data.shape, dtype=data.dtype, device=data.device
+                )
 
             def __init__(self, data):
                 self._data = data
@@ -7963,14 +7966,13 @@ class ReproTestsDevice(torch._dynamo.test_case.TestCase):
 
                 raise NotImplementedError(f"{func=}")
 
-
         # Compile on cuda
         device = "cuda"
         linear = torch.nn.Linear(2, 2, device=device)
         linear.weight = torch.nn.Parameter(Subclass(linear.weight.detach()))
         linear.compile()
         linear(torch.randn(1, 2, device=device))
-        
+
         # Check that there are no weakrefs
         t1 = linear.weight
         self.assertEqual(len(weakref.getweakrefs(t1)), 0)
