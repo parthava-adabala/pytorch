@@ -1993,10 +1993,10 @@ def main():
     test_directory = str(REPO_ROOT / "test")
     selected_tests = get_selected_tests(options)
 
-    test_prioritizations = import_results()
-    if len(test_prioritizations.get_all_tests()) == 0:
+    testsToRun = import_results()
+    if len(testsToRun.included) == 0:
         options.enable_td = False
-    test_prioritizations.amend_tests(selected_tests)
+    testsToRun.amend_tests(selected_tests)
 
     os.makedirs(REPO_ROOT / "test" / "test-reports", exist_ok=True)
 
@@ -2046,7 +2046,7 @@ def main():
         if options.enable_td
         else "Running all tests"
     )
-    include, exclude = test_prioritizations.get_top_per_tests(percent_to_run)
+    include, exclude = testsToRun.included, testsToRun.excluded
 
     test_batch = TestBatch("tests to run", include, False)
     test_batch_exclude = TestBatch("excluded", exclude, True)
