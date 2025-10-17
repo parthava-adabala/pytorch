@@ -116,6 +116,145 @@ def register_should_partition_rule(
     _custom_should_partition_fns[op] = func
 
 
+class MixOrderReduction:
+    """
+    This class contains utility functions to decide if we should fuse reductions
+    reducing across different dimensions of the same input tensor.
+    """
+
+    @staticmethod
+    def has_mix_reduction_orders(
+        node1: BaseSchedulerNode, node2: BaseSchedulerNode
+    ) -> bool:
+        g1 = node1.group[1]
+        g2 = node2.group[1]
+
+        if len(g1) != 2 or len(g2) != 2 or g1 == g2:
+            return False
+
+        return tuple(g1) == tuple(reversed(g2))
+
+    @classmethod
+    def _is_full_access(cls, buf: str, node: BaseSchedulerNode) -> bool:
+        """
+        The access to 'buf' is not a broadcast access.
+        """
+        found_dep = None
+        for dep in node.read_writes.reads:
+            if isinstance(dep, MemoryDep) and dep.name == buf:
+                found_dep = dep
+                break
+
+        if not found_dep:
+            return False
+
+        index = found_dep.index
+        var_ranges = node.read_writes.var_ranges
+
+        if not var_ranges:
+            assert isinstance(node, FusedSchedulerNode), f"{type(node)}"
+            var_ranges = node.snodes[0].read_writes.var_ranges
+
+        assert var_ranges
+        if not (set(var_ranges) - set(index.free_symbols)):
+            return True
+
+        # cases that happen after merging loops:
+        #   MemoryDep('arg0_1', c0, {c0: 25165824})])
+        #   var_ranges={d0: 32768, d1: 768}
+        if V.graph.sizevars.statically_known_equals(
+            sympy_product(found_dep.size), sympy_product(var_ranges.values())
+        ):
+            return True
+        return False
+
+    @classmethod
+    def get_common_read(
+        cls, node1: BaseSchedulerNode, node2: BaseSchedulerNode
+    ) -> list[str]:
+        out = []
+        common_reads = node1.used_buffer_names() & node2.used_buffer_names()
+        for buf in common_reads:
+            if cls._is_full_access(buf, node1) and cls._is_full_access(buf, node2):
+                out.append(buf)
+
+        return out
+
+    @classmethod
+    def has_common_read(
+        cls, node1: BaseSchedulerNode, node2: BaseSchedulerNode
+    ) -> bool:
+        return len(cls.get_common_read(node1, node2)) > 0
+
+    # TODO add a cache
+    @classmethod
+    def can_fuse(cls, node1: BaseSchedulerNode, node2: BaseSchedulerNode) -> bool:
+        if not config.triton.mix_order_reduction:
+            return False
+        if not node1.is_reduction() or not node2.is_reduction():
+            return False
+
+        # check for mix reduction orders
+        if not cls.has_mix_reduction_orders(node1, node2):
+            return False
+
+        # check common buffer accesses
+        common_reads = MixOrderReduction.get_common_read(node1, node2)
+        if len(common_reads) == 0:
+            return False
+
+        g1 = node1.group[1]
+        nrow = max(g1[0], g1[1])
+        ncol = min(g1[0], g1[1])
+
+        # We require more more row than columns since
+        # 1, we prefer doing persistent reduction for each row
+        # 2, we will split the reduction across the rows
+        if not V.graph.sizevars.statically_known_geq(nrow, ncol * 10):
+            return False
+
+        contiguous_node = node1 if node1.group[1][1] == ncol else node2
+
+        return all(cls.is_contiguous_load(buf, contiguous_node) for buf in common_reads)
+
+    @classmethod
+    def are_mix_order_reductions(
+        cls, node1: BaseSchedulerNode, node2: BaseSchedulerNode
+    ) -> bool:
+        return cls.can_fuse(node1, node2)
+
+    @classmethod
+    def is_contiguous_load(cls, buf: str, parent_node: BaseSchedulerNode) -> bool:
+        from torch._inductor.loop_body import MemoryUsageType
+
+        n_congituous_read = 0
+        for node in parent_node.get_nodes():
+            assert isinstance(node, SchedulerNode)
+            loop_body = node._body
+            entries = loop_body.memory_usage[MemoryUsageType.LOAD]
+            index_names = [e.index_name for e in entries if e.buffer_name == buf]
+
+            if len(index_names) == 0:
+                continue
+            assert len(index_names) == 1
+            index_name = index_names[0]
+            index_expr = loop_body.indexing_exprs[index_name]
+            var_ranges = loop_body.var_ranges
+            if len(var_ranges) != 2:
+                return False
+
+            var_symbols = list(var_ranges.keys())
+            stride_vars = V.graph.sizevars.stride_vars(
+                index_expr,
+                var_symbols,
+                var_symbols,
+            )
+            n_congituous_read += stride_vars[-1] == 1
+            if n_congituous_read > 0:
+                break
+        return n_congituous_read > 0
+
+
 @dataclasses.dataclass
 class SchedulerBuffer:
     scheduler: Scheduler
@@ -1261,6 +1400,16 @@ class SchedulerNode(BaseSchedulerNode):
 
         self.refresh_dependencies(normalize=False, need_clear_tiling_cache=True)
 
+    def swap_pw_red_dimension(self) -> None:
+        assert len(self._body.sizes[0]) == 2
+        self.apply_new_loop_order([1, 0])
+        assert len(self.group[1]) == 2
+        self.group = self.group[0], (self.group[1][1], self.group[1][0])
+
+    def extract_pw_from_reduction(self) -> BaseSchedulerNode:
+        self._body = self._body.extract_pw_from_reduction()
+        return self
+
     def expand_dimension_for_pointwise_node(
         self, dimension: int, new_range: int
     ) -> None:
@@ -1552,6 +1701,18 @@ class FusedSchedulerNode(BaseSchedulerNode):
         nodes = list(itertools.chain(node1.get_nodes(), node2.get_nodes()))
         return cls(node1.scheduler, nodes)
 
+    def extract_pw_from_reduction(self) -> BaseSchedulerNode:
+        for subnode in self.snodes:
+            assert isinstance(subnode, SchedulerNode)
+            assert subnode.is_reduction()
+            subnode.extract_pw_from_reduction()
+        return self
+
+    def swap_pw_red_dimension(self) -> None:
+        for subnode in self.snodes:
+            assert isinstance(subnode, SchedulerNode)
+            subnode.swap_pw_red_dimension()
+
     @cache_on_self
     def estimate_flops(self) -> int | None:
         # don't increment counters in fused methods so we don't double count
@@ -1751,6 +1912,15 @@ class FusedSchedulerNode(BaseSchedulerNode):
         if self.snodes is not None:
             return any(node.has_side_effects() for node in self.snodes)
         return super().has_side_effects()
+
+
+class FusedMixOrderReductions(FusedSchedulerNode):
+    def __init__(self, node1: BaseSchedulerNode, node2: BaseSchedulerNode) -> None:
+        self.node1 = node1
+        self.node2 = node2
+        super().__init__(
+            node1.scheduler, list(node1.get_nodes()) + list(node2.get_nodes())
+        )
 
 
 class ForeachKernelSchedulerNode(FusedSchedulerNode):
@@ -5514,6 +5684,8 @@ class Scheduler:
                 else:
                     raise AssertionError(f"{type(self)=}")
                 backend.codegen_combo_kernel(node)
+            elif isinstance(node, FusedMixOrderReductions):
+                self.get_backend(device).codegen_mix_order_reduction(node)
             elif isinstance(node, (FusedSchedulerNode, SchedulerNode)):
                 # pyrefly: ignore  # unbound-name
                 self.get_backend(device).codegen_node(node)
@@ -5709,6 +5881,8 @@ class BaseScheduling:  # noqa: docstring_linter
         """
         if node1.is_foreach() or node2.is_foreach():
             return ForeachKernelSchedulerNode.fuse(node1, node2)
+        elif MixOrderReduction.are_mix_order_reductions(node1, node2):
+            return FusedMixOrderReductions(node1, node2)
         else:
             return FusedSchedulerNode.fuse(node1, node2)
 
@@ -5749,6 +5923,9 @@ class BaseScheduling:  # noqa: docstring_linter
         """
         Generate a kernel given a list of pre-fused nodes.
         """
+        raise NotImplementedError
+
+    def codegen_mix_order_reduction(self, node: FusedMixOrderReductions) -> None:
         raise NotImplementedError
 
     def codegen_sync(self) -> None:
