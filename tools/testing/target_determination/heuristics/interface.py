@@ -15,23 +15,26 @@ class TestsToRun:
     """
     Describes which tests to include and exclude.
     """
+
     included: list[TestRun]
     excluded: list[TestRun]
-    def __init__(self, included: list[TestRun] = [], excluded: list[TestRun] = []) -> None:
+
+    def __init__(self, included: list[TestRun], excluded: list[TestRun]) -> None:
         self.included = included
         self.excluded = excluded
+
     @staticmethod
     def from_json(json_dict: dict[str, Any]) -> TestsToRun:
         return TestsToRun(
             included=[TestRun.from_json(tr_json) for tr_json in json_dict["included"]],
             excluded=[TestRun.from_json(tr_json) for tr_json in json_dict["excluded"]],
         )
+
     def to_json(self) -> dict[str, Any]:
         return {
             "included": [tr.to_json() for tr in self.included],
             "excluded": [tr.to_json() for tr in self.excluded],
         }
-
 
     def amend_tests(self, tests: list[str]) -> None:
         """
@@ -40,7 +43,9 @@ class TestsToRun:
         self.included = [tr for tr in self.included if tr.test_file in tests]
         self.excluded = [tr for tr in self.excluded if tr.test_file in tests]
         self.included = [
-            TestRun(test) for test in tests if test not in [tr.test_file for tr in self.included + self.excluded]
+            TestRun(test)
+            for test in tests
+            if test not in [tr.test_file for tr in self.included + self.excluded]
         ] + self.included
 
 
@@ -149,11 +154,9 @@ class TestPrioritizations:
         """Returns all tests in the TestPrioritizations"""
         return [x[1] for x in self._traverse_scores()]
 
-    def shuffle_tests_among_jobs(
-        self, total_jobs: int
-    ) -> list[list[TestRun]]:
+    def shuffle_tests_among_jobs(self, total_jobs: int) -> list[list[TestRun]]:
         tests = [[x[1] for x in self._traverse_scores()]]
-        jobs = []
+        jobs: list[list[TestRun]] = []
         for job_index in range(total_jobs):
             top_10_percent_index = len(tests[0]) // 10 + 1
             top_tests = tests[0][:top_10_percent_index]
@@ -165,9 +168,12 @@ class TestPrioritizations:
                 tests_for_job.append(rest_tests[job_index + i * total_jobs])
             assert len(tests_for_job) == len(tests)
             assert set(tests_for_job) == set(tests)
+            jobs.append(tests_for_job)
         return jobs
 
-    def get_recommended_cutoffs(self, job_info: list[list[dict[str, Any]]]) -> dict[str, TestsToRun]:
+    def get_recommended_cutoffs(
+        self, job_info: list[list[dict[str, Any]]]
+    ) -> dict[str, TestsToRun]:
         """
         Given job info from the workflow file, returns a dict mapping job names to
         TestsToRun objects that describe which tests to include and exclude.
@@ -187,7 +193,10 @@ class TestPrioritizations:
                 )
 
         all_tests = self.get_all_tests()
-        cutoffs["default"] = TestsToRun(included=all_tests[:top_25_percent_index], excluded=all_tests[top_25_percent_index:])
+        cutoffs["default"] = TestsToRun(
+            included=all_tests[:top_25_percent_index],
+            excluded=all_tests[top_25_percent_index:],
+        )
 
         return cutoffs
 
@@ -346,6 +355,7 @@ class AggregatedHeuristics:
         json_dict: dict[str, Any] = {}
         for heuristic, heuristic_results in self._heuristic_results.items():
             json_dict[heuristic.name] = heuristic_results.to_json()
+            del json_dict[heuristic.name]["_original_tests"]  # Avoid duplication
 
         return json_dict
 

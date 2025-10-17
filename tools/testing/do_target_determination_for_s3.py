@@ -1,8 +1,8 @@
+import argparse
 import json
 import os
 import sys
 from pathlib import Path
-import argparse
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -20,19 +20,21 @@ from tools.stats.import_test_stats import (
 )
 from tools.stats.upload_metrics import emit_metric
 from tools.testing.discover_tests import TESTS
-from tools.testing.target_determination.determinator import (
+from tools.testing.target_determination import (
     AggregatedHeuristics,
+    get_job_info_from_workflow_file,
     get_test_prioritizations,
     TestsToRun,
 )
 
-from tools.testing.target_determination.do_td_with_job_info import get_job_info_from_workflow_file
 
 sys.path.remove(str(REPO_ROOT))
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(description="Run target determination with job info")
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Run target determination with job info"
+    )
     parser.add_argument(
         "--workflow-ref",
         type=str,
@@ -42,15 +44,15 @@ def parse_args():
     args = parser.parse_args()
     return args
 
-def import_results() -> TestsToRun:
+
+def import_results(job_name: str) -> TestsToRun:
     if not (REPO_ROOT / ".additional_ci_files/td_results.json").exists():
         print("No TD results found")
         return TestsToRun([], [])
     with open(REPO_ROOT / ".additional_ci_files/td_results.json") as f:
         td_results = json.load(f)
-        return {
-            k: TestsToRun.from_json(v) for k, v in td_results.items()
-        }
+        res = {k: TestsToRun.from_json(v) for k, v in td_results.items()}
+        return res.get(job_name, res.get("default", TestsToRun([], [])))
 
 
 def main() -> None:
@@ -90,7 +92,7 @@ def main() -> None:
             {"aggregated_heuristics": aggregated_heuristics.to_json()},
         )
 
-    recommended_cutoffs_per_job = test_prioritizations.get_recommended_cutoffs_per_job(job_info)
+    recommended_cutoffs_per_job = test_prioritizations.get_recommended_cutoffs(job_info)
 
     json_serialized_cutoffs = {
         k: v.to_json() for k, v in recommended_cutoffs_per_job.items()
