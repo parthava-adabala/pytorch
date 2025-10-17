@@ -71,7 +71,7 @@ def main() -> None:
     copy_additional_previous_failures()
 
     job_info = get_job_info_from_workflow_file(args.workflow_ref)
-    print(f"Job info: {job_info}")
+    print(f"Job info: {json.dumps(job_info, indent=2)}")
 
     aggregated_heuristics = get_test_prioritizations(selected_tests)
 

@@ -28,12 +28,11 @@ def get_job_info_from_workflow_file(workflow_file: str) -> list[list[dict[str, A
 
     with open(REPO_ROOT / workflow_file) as f:
         yml = yaml.safe_load(f)
-    jobs = yml.get("jobs", {})
-
-    jobs_with_tests: list[dict[str, Any]] = []
+    raw_jobs = yml.get("jobs", {})
+    jobs: list[dict[str, Any]] = []
     dependent_jobs = {}
 
-    for job, job_info in jobs.items():
+    for job, job_info in raw_jobs.items():
         if "test-matrix" not in job_info.get("with", {}):
             continue
         try:
@@ -45,60 +44,48 @@ def get_job_info_from_workflow_file(workflow_file: str) -> list[list[dict[str, A
                     dep_job = match.group(1)
                     dependent_jobs[f"{job_info.get('name', job)}"] = {
                         "depends_on": f"{dep_job}",
-                        "is_test": "test" in job_info.get("uses", ""),
+                        "uses": job_info.get("uses", ""),
                     }
                 continue
         except yaml.YAMLError as e:
             print(f"Error parsing test-matrix for job {job}: {e}")
             continue
-        jobs_with_tests.append(
+        jobs.append(
             {
                 "job_id": f"{job}",
                 "job_name": f"{job_info.get('name', job)}",
                 "test_matrix": sorted(
                     {entry["config"] for entry in test_matrix["include"]}
                 ),
-                "is_test": "test" in job_info.get("uses", ""),
+                "uses": job_info.get("uses", ""),
             }
         )
+
     # Fill in dependent jobs
     for job, info in dependent_jobs.items():
-        for j in jobs_with_tests:
+        for j in jobs:
             if j["job_id"] == info["depends_on"]:
-                jobs_with_tests.append(
+                jobs.append(
                     {
                         "job_id": job,
                         "job_name": job,
                         "test_matrix": j["test_matrix"],
-                        "is_test": info["is_test"],
+                        "uses": info["uses"],
                     }
                 )
                 break
 
-    # Remove non test jobs
-    jobs_with_tests = [j for j in jobs_with_tests if j.get("is_test", False)]
-
-    # Dedup by name
-    jobs_seen = set()
-    jobs_with_tests_dedup: list[dict[str, Any]] = []
-    for j in jobs_with_tests:
-        if j["job_name"] not in jobs_seen:
-            jobs_with_tests_dedup.append(j)
-            jobs_seen.add(j["job_name"])
-
-    # Remove job_id
-    for j in jobs_with_tests_dedup:
-        j.pop("job_id", None)
+    # Remove everything that doesn't use test
+    jobs = [j for j in jobs if "test" in j["uses"]]
 
     individual_jobs = [
-        {"job_name": j["job_name"], "config": config}
-        for j in jobs_with_tests_dedup
+        {"job_name": j["job_name"], "config": config, "uses": j.get("uses", "")}
+        for j in jobs
         for config in j["test_matrix"]
     ]
 
     # Group the jobs together
     # generally same test config -> same group
-
     grouped_jobs: dict[str, list[dict[str, Any]]] = {}
     for job in individual_jobs:
         key = []
@@ -113,9 +100,14 @@ def get_job_info_from_workflow_file(workflow_file: str) -> list[list[dict[str, A
         if "windows" in job["job_name"]:
             key.append("windows")
         key.append(job["config"])
+        key.append(job["uses"])
         key_str = "|".join(sorted(key))
         if key_str not in grouped_jobs:
             grouped_jobs[key_str] = []
         grouped_jobs[key_str].append(job)
+
+    for group in grouped_jobs.values():
+        for j in group:
+            j.pop("uses", None)
 
     return list(grouped_jobs.values())
