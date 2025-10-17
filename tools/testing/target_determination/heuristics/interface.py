@@ -155,17 +155,19 @@ class TestPrioritizations:
         return [x[1] for x in self._traverse_scores()]
 
     def shuffle_tests_among_jobs(self, total_jobs: int) -> list[list[TestRun]]:
-        tests = [[x[1] for x in self._traverse_scores()]]
+        tests = [x[1] for x in self._traverse_scores()]
         jobs: list[list[TestRun]] = []
         for job_index in range(total_jobs):
-            top_10_percent_index = len(tests[0]) // 10 + 1
-            top_tests = tests[0][:top_10_percent_index]
-            rest_tests = tests[0][top_10_percent_index:]
+            top_10_percent_index = len(tests) // 10 + 1
+            top_tests = tests[:top_10_percent_index]
+            rest_tests = tests[top_10_percent_index:]
             # Everyone run top 10% of tests by rank
-            tests_for_job = top_tests
-            # Rest of the tests, get round robined among jobs
+            tests_for_job = top_tests.copy()
+            # Rest of the tests get rotated among jobs
             for i in range(len(rest_tests)):
-                tests_for_job.append(rest_tests[job_index + i * total_jobs])
+                tests_for_job.append(
+                    rest_tests[(job_index + i * total_jobs) % len(rest_tests)]
+                )
             assert len(tests_for_job) == len(tests)
             assert set(tests_for_job) == set(tests)
             jobs.append(tests_for_job)
