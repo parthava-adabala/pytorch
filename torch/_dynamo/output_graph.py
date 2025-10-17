@@ -2199,7 +2199,8 @@ class OutputGraph(OutputGraphCommon):
                 self.install_global_unsafe(name, compiled_fn)
 
             # cleanup old_fake_mode to release weakrefs
-            old_fake_mode._clear_memos()
+            if not self.export:
+                old_fake_mode._clear_memos()
 
             assert self.root_tx is not None
             cg = PyCodegen(self.root_tx)

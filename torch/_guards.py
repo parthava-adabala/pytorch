@@ -908,6 +908,7 @@ class TracingContext:
         self.previously_inlined_functions.clear()
         self.previously_cleaned_instructions.clear()
         self.guards_context.dynamo_guards.inner = set()
+        self.tensor_to_context = WeakTensorKeyDictionary()
 
     @staticmethod
     @contextmanager
