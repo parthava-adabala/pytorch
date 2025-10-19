@@ -255,6 +255,10 @@ prologue_fusion = prologue_fusion_enabled()
 # do epilogue fusions before other fusions
 epilogue_fusion_first = False
 
+# enable custom op fusion support
+enable_custom_op_epilogue_fusion = os.environ.get("TORCHINDUCTOR_CUSTOM_OP_EPILOGUE_FUSION", "1") == "1"
+enable_custom_op_prologue_fusion = os.environ.get("TORCHINDUCTOR_CUSTOM_OP_PROLOGUE_FUSION", "1") == "1"
+
 # enable pattern match+replace optimizations
 pattern_matcher = True
 
