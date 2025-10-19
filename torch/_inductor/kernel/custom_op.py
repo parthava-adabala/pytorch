@@ -65,7 +65,6 @@ def _create_user_input_gen_fns(
 
     Uses V.graph.sizevars.size_hints() to guess best for dynamic shapes.
     """
-    from torch._inductor import config
 
     name_to_index = {name: i for i, name in enumerate(arg_names)}
     index_based_fns = {}
