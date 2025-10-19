@@ -225,6 +225,7 @@ def autotune_custom_op(
         dict[str, Callable[[torch.Tensor], torch.Tensor]]
     ] = None,
     enable_epilogue_fusion: bool = False,
+    enable_prologue_fusion: bool = False,
 ) -> Union[TensorBox, Any]:
     """Autotune custom operations by comparing multiple decomposition implementations.
 
@@ -323,9 +324,12 @@ def autotune_custom_op(
         input_gen_fns=input_gen_fns,
     )
 
-    # Mark result for custom op epilogue fusion if enabled
+    # Mark result for custom op fusion if enabled
     if enable_epilogue_fusion and isinstance(selected_result, TensorBox):
         _mark_custom_op_for_epilogue_fusion(selected_result, name)
+
+    if enable_prologue_fusion and isinstance(selected_result, TensorBox):
+        _mark_custom_op_for_prologue_fusion(selected_result, name)
 
     return selected_result
 
@@ -350,12 +354,33 @@ def _mark_custom_op_for_epilogue_fusion(result: TensorBox, name: str) -> None:
         )
 
 
+def _mark_custom_op_for_prologue_fusion(result: TensorBox, name: str) -> None:
+    """Mark the result for custom op prologue fusion by the scheduler.
+
+    Args:
+        result: The autotuning result to mark
+        name: Operation name for identification
+    """
+    if hasattr(result, "data") and hasattr(result.data, "get_name"):
+        # Mark this buffer as a custom op result eligible for prologue fusion
+        if not hasattr(result.data, "_custom_op_fusion_metadata"):
+            result.data._custom_op_fusion_metadata = {}
+
+        result.data._custom_op_fusion_metadata.update(
+            {
+                "prologue_fusion_enabled": True,
+                "custom_op_name": name,
+            }
+        )
+
+
 def register_custom_op_autotuning(
     custom_op: torch._ops.OpOverload,
     configs: Union[list[CustomOpConfig], list[Callable[..., Any]]],
     name: Optional[str] = None,
     input_gen_fns: Optional[dict[str, Callable[[torch.Tensor], torch.Tensor]]] = None,
     enable_epilogue_fusion: bool = False,
+    enable_prologue_fusion: bool = False,
 ) -> None:
     """Register custom op for autotuning with explicit configs.
 
@@ -421,35 +446,10 @@ def register_custom_op_autotuning(
             default_impl=custom_op,
             user_input_gen_fns=input_gen_fns,
             enable_epilogue_fusion=enable_epilogue_fusion,
+            enable_prologue_fusion=enable_prologue_fusion,
         )
 
         validate_ir(result)
         return result
 
     lowerings[custom_op] = autotuning_lowering
-
-
-# Example of using inline epilogue fusion:
-#
-# # Method 1: Per-operation epilogue fusion
-# register_custom_op_autotuning(
-#     custom_op=torch.ops.mylib.myop.default,
-#     decompositions=[decomp1, decomp2, decomp3],
-#     enable_epilogue_fusion=True,  # Enable inline epilogue fusion
-# )
-#
-# # Method 2: Enable globally via config
-# import torch._inductor.config as config
-# config.enable_custom_op_epilogue_fusion = True
-#
-# register_custom_op_autotuning(
-#     custom_op=torch.ops.mylib.myop.default,
-#     decompositions=[decomp1, decomp2, decomp3],
-#     # Epilogue fusion enabled by global flag
-# )
-#
-# The inline epilogue fusion system:
-# 1. Run autotuning to select the fastest implementation choice
-# 2. Apply inline epilogue fusion to the selected best choice if enabled
-# 3. Mark the result for fusion-eligibility for the scheduler's existing fusion passes
-# 4. Leverages today's fusion support without extending beyond current capabilities

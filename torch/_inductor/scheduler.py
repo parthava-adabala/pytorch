@@ -3217,8 +3217,20 @@ class Scheduler:
             and isinstance(n.get_template_node(), ir.MultiTemplateBuffer)
             for n in (node1, node2)
         )
-        if not config.benchmark_fusion and not is_multi_template:
+        # Check for custom op fusion cases
+        is_custom_op_fusion = (
+            self._can_apply_custom_op_epilogue_fusion(node1, node2) or
+            self._can_apply_custom_op_prologue_fusion(node1, node2)
+        )
+
+        if not config.benchmark_fusion and not is_multi_template and not is_custom_op_fusion:
             return True
+
+        # For custom op fusion, we want to benchmark by default unless explicitly disabled
+        if is_custom_op_fusion and not config.benchmark_fusion:
+            # Still allow benchmark for custom ops even if global benchmark_fusion is off
+            fusion_log.debug("Benchmarking custom op fusion: %s <-> %s",
+                           node1.get_first_name(), node2.get_first_name())
 
         if (
             node1.is_template()
@@ -4273,6 +4285,12 @@ class Scheduler:
             if not self.check_prologue_fusion_heuristics_fusable(node1, node2, why):
                 return False
 
+        # Check for custom op prologue fusion
+        if self._can_apply_custom_op_prologue_fusion(node1, node2):
+            fusion_log.debug("Custom op prologue fusion applicable for %s -> %s",
+                           node1.get_first_name(), node2.get_first_name())
+            return True
+
         if node1.is_template() and (
             node2.has_aliasing_or_mutation()
             or node2.is_reduction()
@@ -4427,6 +4445,78 @@ class Scheduler:
                     fusion_log.info("Custom op epilogue fusion enabled for %s -> %s (custom_op: %s)",
                                   node1.get_first_name(), node2.get_first_name(),
                                   metadata.get('custom_op_name', 'unknown'))
+                    return True
+
+        # Enhanced check: also look for custom ops directly in the node
+        if (hasattr(node1, 'node') and hasattr(node1.node, 'data') and
+            hasattr(node1.node.data, 'name') and
+            hasattr(node1.node.data, 'get_inputs')):
+
+            # Check if this is a result from our custom op autotune system
+            if (hasattr(node1.node.data, 'get_name') and
+                '_autotuned' in str(node1.node.data.get_name())):
+
+                # Apply similar checks as template epilogue fusion
+                if (node2.is_pointwise() and
+                    not node2.is_reduction() and
+                    not node2.has_aliasing_or_mutation()):
+
+                    fusion_log.debug("Custom op epilogue candidate: %s -> %s",
+                                   node1.get_first_name(), node2.get_first_name())
+                    return True
+
+        return False
+
+    def _can_apply_custom_op_prologue_fusion(
+        self, node1: BaseSchedulerNode, node2: BaseSchedulerNode
+    ) -> bool:
+        """Check if custom op prologue fusion can be applied between two nodes.
+
+        Args:
+            node1: Producer node (potential prologue operation)
+            node2: Consumer node (potential custom op)
+
+        Returns:
+            bool: True if custom op prologue fusion is applicable
+        """
+        # Check if global config enables custom op prologue fusion
+        from torch._inductor import config
+        if not config.enable_custom_op_prologue_fusion:
+            return False
+
+        # Check if node2 is marked as a custom op that supports prologue fusion
+        if (hasattr(node2, 'node') and hasattr(node2.node, 'data') and
+            hasattr(node2.node.data, '_custom_op_fusion_metadata')):
+
+            metadata = node2.node.data._custom_op_fusion_metadata
+            if metadata.get('prologue_fusion_enabled', False):
+
+                # Check if node1 is a suitable prologue operation
+                if (node1.is_pointwise() and
+                    not node1.is_reduction() and
+                    not node1.has_aliasing_or_mutation()):
+
+                    fusion_log.info("Custom op prologue fusion enabled for %s -> %s (custom_op: %s)",
+                                  node1.get_first_name(), node2.get_first_name(),
+                                  metadata.get('custom_op_name', 'unknown'))
+                    return True
+
+        # Enhanced check: also look for custom ops directly in the node
+        if (hasattr(node2, 'node') and hasattr(node2.node, 'data') and
+            hasattr(node2.node.data, 'name') and
+            hasattr(node2.node.data, 'get_inputs')):
+
+            # Check if this is a result from our custom op autotune system
+            if (hasattr(node2.node.data, 'get_name') and
+                '_autotuned' in str(node2.node.data.get_name())):
+
+                # Apply similar checks as template prologue fusion
+                if (node1.is_pointwise() and
+                    not node1.is_reduction() and
+                    not node1.has_aliasing_or_mutation()):
+
+                    fusion_log.debug("Custom op prologue candidate: %s -> %s",
+                                   node1.get_first_name(), node2.get_first_name())
                     return True
 
         return False
