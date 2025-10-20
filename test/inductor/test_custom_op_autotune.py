@@ -567,7 +567,10 @@ class TestCustomOpAutoTune(TestCase):
             expected_final,
             rtol=rtol,
             atol=atol,
-            msg=f"Decompose-k epilogue fusion numerical mismatch (max_abs_diff={max_abs_diff:.8f}, max_rel_diff={max_rel_diff:.8f})",
+            msg=(
+                f"Decompose-k epilogue fusion numerical mismatch "
+                f"(max_abs_diff={max_abs_diff:.8f}, max_rel_diff={max_rel_diff:.8f})"
+            ),
         )
 
     @skipIfXpu
