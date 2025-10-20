@@ -21,9 +21,11 @@ def get_job_info_from_workflow_file(workflow_file: str) -> list[list[dict[str, A
     they run, correlation etc, also looks at jobs on main branch or merge base
     to better determine what jobs exist.
     """
-    workflow_file = workflow_file.split("@")[
-        -1
-    ]  # remove any reference to branch/commit
+    # Usually takes the form
+    # pytorch/pytorch/.github/workflows/pull.yml@refs/pull/165793/merge in CI?
+    workflow_file = workflow_file.split("@")[0].split(".github/workflows/")
+    workflow_file = ".github/workflows/" + workflow_file[1]
+
     regex = r"needs\.([a-zA-Z0-9_-]+)\.outputs\.test-matrix"
 
     with open(REPO_ROOT / workflow_file) as f:
