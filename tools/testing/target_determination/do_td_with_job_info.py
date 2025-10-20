@@ -2,7 +2,13 @@ import re
 from pathlib import Path
 from typing import Any
 
-import yaml
+
+HAS_PYYAML = True
+try:
+    import yaml
+except ImportError:
+    print("Please install pyyaml to use target determination features.")
+    HAS_PYYAML = False
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -21,6 +27,8 @@ def get_job_info_from_workflow_file(workflow_file: str) -> list[list[dict[str, A
     they run, correlation etc, also looks at jobs on main branch or merge base
     to better determine what jobs exist.
     """
+    if not HAS_PYYAML:
+        return []
     # Usually takes the form
     # pytorch/pytorch/.github/workflows/pull.yml@refs/pull/165793/merge in CI?
     workflow_file = workflow_file.split("@")[0].split(".github/workflows/")

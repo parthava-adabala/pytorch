@@ -1994,7 +1994,7 @@ def main():
     selected_tests = get_selected_tests(options)
 
     testsToRun = import_results(
-        os.environ.get("JOB_NAME", os.environ.get("BUILD_ENVIRONMENT", "default"))
+        f"{os.environ.get('JOB_NAME', '')}|{os.environ.get('TEST_CONFIG', '')}"
     )
     if len(testsToRun.included) == 0:
         options.enable_td = False

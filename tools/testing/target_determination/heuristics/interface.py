@@ -194,8 +194,9 @@ class TestPrioritizations:
             jobs_for_tests = self.shuffle_tests_among_jobs(len(job_group))
             for i, job in enumerate(job_group):
                 job_name = job["job_name"]
+                test_config = job["config"]
                 tests_for_job = jobs_for_tests[i]
-                cutoffs[job_name] = TestsToRun(
+                cutoffs[f"{job_name}|{test_config}"] = TestsToRun(
                     included=tests_for_job[:top_25_percent_index],
                     excluded=tests_for_job[top_25_percent_index:],
                 )
