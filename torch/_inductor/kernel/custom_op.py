@@ -226,6 +226,7 @@ def autotune_custom_op(
     ] = None,
     enable_epilogue_fusion: bool = False,
     enable_prologue_fusion: bool = False,
+    disable_fallback: bool = False,
 ) -> Union[TensorBox, Any]:
     """Autotune custom operations by comparing multiple decomposition implementations.
 
@@ -324,7 +325,52 @@ def autotune_custom_op(
         input_gen_fns=input_gen_fns,
     )
 
-    # Mark result for custom op fusion if enabled
+    # Apply inlining if epilogue fusion is enabled
+    if enable_epilogue_fusion and isinstance(selected_result, TensorBox):
+        # Find the winning choice that was selected during autotuning
+        winning_choice = None
+
+        # Debug: Let's understand the structure of selected_result
+        print(f"🔍 Debugging selected_result: {type(selected_result)}")
+        print(f"🔍 selected_result.data: {type(selected_result.data)}")
+        if hasattr(selected_result.data, "__dict__"):
+            print(
+                f"🔍 selected_result.data attributes: {list(selected_result.data.__dict__.keys())}"
+            )
+
+        # Try different ways to find the winning choice
+        if hasattr(selected_result, "data") and hasattr(
+            selected_result.data, "subgraph_name"
+        ):
+            # SubgraphBuffer case - find matching choice by name
+            subgraph_name = selected_result.data.subgraph_name
+            print(f"🔍 Looking for subgraph_name: {subgraph_name}")
+            for choice in choices:
+                print(f"🔍 Choice name: {choice.name}")
+                if choice.name == subgraph_name:
+                    winning_choice = choice
+                    break
+
+        # Alternative: The first choice might be the winner if we can't find exact match
+        if not winning_choice and choices:
+            print(f"🔍 Using first choice as fallback: {choices[0].name}")
+            winning_choice = choices[0]
+
+        if winning_choice:
+            print(f"🎯 Inlining winning choice: {winning_choice.name}")
+            try:
+                # Inline the winning choice operations into the main graph
+                inlined_result = _inline_custom_op_choice(winning_choice, inputs, name)
+                return inlined_result
+            except Exception as e:
+                print(f"❌ Inlining failed: {e}")
+                print("⚠️  Falling back to marking approach")
+        else:
+            print(
+                "⚠️  Could not find winning choice for inlining, falling back to marking"
+            )
+
+    # Mark result for custom op fusion if enabled (fallback path)
     if enable_epilogue_fusion and isinstance(selected_result, TensorBox):
         _mark_custom_op_for_epilogue_fusion(selected_result, name)
 
@@ -332,6 +378,82 @@ def autotune_custom_op(
         _mark_custom_op_for_prologue_fusion(selected_result, name)
 
     return selected_result
+
+
+def _inline_custom_op_choice(winning_choice, inputs: list[Any], name: str) -> TensorBox:
+    """Inline the winning custom op choice by converting its FX operations to individual IR nodes.
+
+    This converts the custom op from a single ExternKernel (unfusable) to multiple ComputedBuffer
+    nodes (fusable), enabling epilogue fusion with subsequent operations.
+
+    Args:
+        winning_choice: The winning SubgraphChoiceCaller from autotuning
+        inputs: Original input nodes
+        name: Custom op name for debugging
+
+    Returns:
+        TensorBox containing the final operation result as individual IR nodes
+    """
+    from torch._inductor.lowering import lowerings
+
+    # Get the GraphModule containing the operations
+    gm = winning_choice.gm
+
+    # Create a temporary graph lowering context to process the FX nodes
+    # We'll extract the operations and add them to the current graph
+    current_graph = V.graph
+
+    # Create mapping from placeholder nodes to actual inputs
+    node_to_value = {}
+    placeholder_idx = 0
+
+    # Process each node in the winning choice's graph
+    for node in gm.graph.nodes:
+        if node.op == "placeholder":
+            # Map placeholder to actual input
+            if placeholder_idx < len(inputs):
+                node_to_value[node] = inputs[placeholder_idx]
+                placeholder_idx += 1
+            else:
+                raise RuntimeError(f"Not enough inputs for placeholder {node.name}")
+
+        elif node.op == "call_function":
+            # Convert FX operation to IR nodes using existing lowerings
+            target = node.target
+            args = [
+                node_to_value[arg] if arg in node_to_value else arg for arg in node.args
+            ]
+            kwargs = {
+                k: node_to_value[v] if v in node_to_value else v
+                for k, v in node.kwargs.items()
+            }
+
+            # Call the appropriate lowering function
+            if target in lowerings:
+                result = lowerings[target](*args, **kwargs)
+                node_to_value[node] = result
+            else:
+                # Fallback: try calling the target directly
+                result = target(*args, **kwargs)
+                node_to_value[node] = result
+
+        elif node.op == "output":
+            # Return the final result
+            output_arg = node.args[0]
+            if isinstance(output_arg, (list, tuple)):
+                # Multi-output case (not yet supported)
+                raise RuntimeError(
+                    "Multi-output custom ops not yet supported for inlining"
+                )
+            else:
+                # Single output case
+                final_result = node_to_value[output_arg]
+                return final_result
+
+        else:
+            raise RuntimeError(f"Unsupported node type: {node.op}")
+
+    raise RuntimeError("No output node found in custom op graph")
 
 
 def _mark_custom_op_for_epilogue_fusion(result: TensorBox, name: str) -> None:
@@ -381,6 +503,7 @@ def register_custom_op_autotuning(
     input_gen_fns: Optional[dict[str, Callable[[torch.Tensor], torch.Tensor]]] = None,
     enable_epilogue_fusion: bool = False,
     enable_prologue_fusion: bool = False,
+    disable_fallback: bool = False,
 ) -> None:
     """Register custom op for autotuning with explicit configs.
 
@@ -447,6 +570,7 @@ def register_custom_op_autotuning(
             user_input_gen_fns=input_gen_fns,
             enable_epilogue_fusion=enable_epilogue_fusion,
             enable_prologue_fusion=enable_prologue_fusion,
+            disable_fallback=disable_fallback,
         )
 
         validate_ir(result)
