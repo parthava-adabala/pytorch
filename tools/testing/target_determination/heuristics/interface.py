@@ -156,22 +156,28 @@ class TestPrioritizations:
 
     def shuffle_tests_among_jobs(self, total_jobs: int) -> list[list[TestRun]]:
         tests = self.get_all_tests()
-        jobs: list[list[TestRun]] = []
+        jobs: list[list[TestRun]] = [[] for _ in range(total_jobs)]
         top_10_percent_index = len(tests) // 10 + 1
         top_tests = tests[:top_10_percent_index]
         rest_tests = tests[top_10_percent_index:]
+        # Round robin distribute the rest of the tests among jobs
+        for i in range(len(rest_tests)):
+            jobs[i % total_jobs].append(rest_tests[i])
+
+        # Now add all jobs to each other so they all get everything, but rotated
+        jobs_rotated: list[list[TestRun]] = [[] for _ in range(total_jobs)]
         for job_index in range(total_jobs):
-            # Everyone run top 10% of tests by rank
-            tests_for_job = top_tests.copy()
-            # Rest of the tests get rotated among jobs
-            for i in range(len(rest_tests)):
-                tests_for_job.append(
-                    rest_tests[(job_index + i * total_jobs) % len(rest_tests)]
-                )
+            for offset in range(total_jobs):
+                jobs_rotated[job_index].extend(jobs[(job_index + offset) % total_jobs])
+
+        # Now add the top tests to each job at the front
+        all_jobs = []
+        for job_index in range(total_jobs):
+            tests_for_job = top_tests + jobs_rotated[job_index]
             assert len(tests_for_job) == len(tests)
             assert set(tests_for_job) == set(tests)
-            jobs.append(tests_for_job)
-        return jobs
+            all_jobs.append(tests_for_job)
+        return all_jobs
 
     def get_recommended_cutoffs(
         self, job_info: list[list[dict[str, Any]]]
