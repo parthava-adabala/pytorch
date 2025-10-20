@@ -52,6 +52,8 @@ def import_results(job_name: str) -> TestsToRun:
     with open(REPO_ROOT / ".additional_ci_files/td_results.json") as f:
         td_results = json.load(f)
         res = {k: TestsToRun.from_json(v) for k, v in td_results.items()}
+        if job_name not in res:
+            print(f"Job name {job_name} not found in TD results, using default")
         return res.get(job_name, res.get("default", TestsToRun([], [])))
 
 
