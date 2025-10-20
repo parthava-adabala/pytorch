@@ -188,7 +188,9 @@ class TestPrioritizations:
         """
         cutoffs: dict[str, TestsToRun] = {}
 
-        top_25_percent_index = len(self._test_scores) // 4 + 1
+        cutoff_percent = 0.5
+
+        cutoff_index = int(len(self._test_scores) * cutoff_percent) + 1
 
         for job_group in job_info:
             jobs_for_tests = self.shuffle_tests_among_jobs(len(job_group))
@@ -197,14 +199,14 @@ class TestPrioritizations:
                 test_config = job["config"]
                 tests_for_job = jobs_for_tests[i]
                 cutoffs[f"{job_name}|{test_config}"] = TestsToRun(
-                    included=tests_for_job[:top_25_percent_index],
-                    excluded=tests_for_job[top_25_percent_index:],
+                    included=tests_for_job[:cutoff_index],
+                    excluded=tests_for_job[cutoff_index:],
                 )
 
         all_tests = self.get_all_tests()
         cutoffs["default"] = TestsToRun(
-            included=all_tests[:top_25_percent_index],
-            excluded=all_tests[top_25_percent_index:],
+            included=all_tests[:cutoff_index],
+            excluded=all_tests[cutoff_index:],
         )
 
         return cutoffs
