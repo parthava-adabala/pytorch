@@ -782,10 +782,14 @@ class TestFP8Lowering(TestCase):
     )
     @parametrize("shape", ((16,32,32), (1024,1024,512)))
     @parametrize("use_fast_accum", (False, True))
-    def test_blockwise1x128_blockwise128x128_scaling(
+    @parametrize(
+        "scaling_block_sizes", ((1,128,128,128), (1,128,1,128))
+    )  # (BlockWise1x128, BlockWise128x128), (BlockWise1x128, BlockWise1x128)
+    def test_main_loop_scaling(
         self,
         shape: tuple[int, int, int],
         use_fast_accum: bool,
+        scaling_block_sizes: tuple[int, int, int, int],
     ):
         # Only bf16 output type is supported for non-tensorwise scaling, not fp32
         dtype: torch.dtype = torch.bfloat16
@@ -798,16 +802,18 @@ class TestFP8Lowering(TestCase):
         w = torch.randn(N, K, dtype=dtype, device=device)
         bias = None
 
+        am, ak, bn, bk = scaling_block_sizes
+
         # quantize weight (prior to inference)
         w_fp8, w_inverse_scale = _quantize_blockwise(
-            w, dtype_float8, block_outer=128, block_inner=128
+            w, dtype_float8, block_outer=bn, block_inner=bk
         )
         w_t_fp8 = w_fp8.t()
         w_inverse_scale = w_inverse_scale.t()  # scale_b should be (1, N)
 
         # quantize input x
         x_fp8, x_inverse_scale = _quantize_blockwise(
-            x, dtype_float8, block_outer=1, block_inner=128
+            x, dtype_float8, block_outer=am, block_inner=ak
         )
 
         def linear(x_fp8, x_inverse_scale, w_t_fp8, w_inverse_scale, bias):
