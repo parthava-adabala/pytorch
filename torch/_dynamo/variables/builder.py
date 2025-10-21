@@ -1716,7 +1716,7 @@ class VariableBuilder:
                     value[i]
                 )
                 guard = functools.partial(
-                    GuardBuilder.TENSOR_MATCH, value=TensorWeakRef(value[i])
+                    GuardBuilder.TENSOR_MATCH, value=value[i]
                 )
                 guards.append(source_i.make_guard(guard))
 
@@ -2203,11 +2203,7 @@ class VariableBuilder:
         self.install_guards(
             functools.partial(
                 guard_type,
-                value=(
-                    value
-                    if isinstance(source, NumpyTensorSource)
-                    else TensorWeakRef(value)
-                ),
+                value=value
             )
         )
 
