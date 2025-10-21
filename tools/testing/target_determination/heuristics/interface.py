@@ -188,7 +188,7 @@ class TestPrioritizations:
         """
         cutoffs: dict[str, TestsToRun] = {}
 
-        cutoff_percent = 0.25
+        cutoff_percent = 0.3
 
         cutoff_index = int(len(self._test_scores) * cutoff_percent) + 1
 
