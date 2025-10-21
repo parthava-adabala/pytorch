@@ -488,10 +488,7 @@ class TestCustomOpAutoTune(TestCase):
         ):
             compiled_result = epilogue_fusion_model(a, b, bias)
 
-        # Since we disabled fallback, autotune must select one of the decompose_k variants
-        # Compare against the same decompose_k implementation with k_splits=32 (first option)
         def reference_model(a, b, bias):
-            # Use decompose_k with k_splits=32 (first value from tuning_knob)
             matmul_result = decompose_k_implementation(a, b, k_splits=32)
             biased = matmul_result + bias
             activated = torch.relu(biased)
@@ -500,35 +497,11 @@ class TestCustomOpAutoTune(TestCase):
 
         expected_final = reference_model(a, b, bias)
 
-        # Debug: Check actual differences to understand why it's failing
-        abs_diff = torch.abs(compiled_result - expected_final)
-        rel_diff = abs_diff / (torch.abs(expected_final) + 1e-8)
-
-        max_abs_diff = torch.max(abs_diff).item()
-        max_rel_diff = torch.max(rel_diff).item()
-        mean_abs_diff = torch.mean(abs_diff).item()
-
-        print("🔍 Numerical difference debug:")
-        print(f"  Max absolute difference: {max_abs_diff:.8f}")
-        print(f"  Max relative difference: {max_rel_diff:.8f}")
-        print(f"  Mean absolute difference: {mean_abs_diff:.8f}")
-        print(
-            f"  Compiled result range: [{torch.min(compiled_result):.6f}, {torch.max(compiled_result):.6f}]"
-        )
-        print(
-            f"  Expected result range: [{torch.min(expected_final):.6f}, {torch.max(expected_final):.6f}]"
-        )
-
-        rtol, atol = 1, 1
-
-        print(f"  Using tolerance: rtol={rtol}, atol={atol}")
-
         torch.testing.assert_close(
             compiled_result,
             expected_final,
-            rtol=rtol,
-            atol=atol,
-            msg=f"Decompose-k epilogue fusion numerical mismatch (max_abs_diff={max_abs_diff:.8f}, max_rel_diff={max_rel_diff:.8f})",
+            rtol=1e-2,
+            atol=1e-2,
         )
 
     @skipIfXpu

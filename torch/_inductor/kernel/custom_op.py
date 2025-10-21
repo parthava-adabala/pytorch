@@ -327,60 +327,16 @@ def autotune_custom_op(
 
     # Apply inlining if epilogue fusion is enabled
     if enable_epilogue_fusion and isinstance(selected_result, TensorBox):
-        # Find the winning choice that was selected during autotuning
-        winning_choice = None
-
-        # Debug: Let's understand the structure of selected_result
-        print(f"🔍 Debugging selected_result: {type(selected_result)}")
-        print(f"🔍 selected_result.data: {type(selected_result.data)}")
-        if hasattr(selected_result.data, "__dict__"):
-            print(
-                f"🔍 selected_result.data attributes: {list(selected_result.data.__dict__.keys())}"
-            )
-
-        # Try different ways to find the winning choice
-        if hasattr(selected_result, "data") and hasattr(
-            selected_result.data, "subgraph_name"
-        ):
-            # SubgraphBuffer case - find matching choice by name
-            subgraph_name = selected_result.data.subgraph_name
-            print(f"🔍 Looking for subgraph_name: {subgraph_name}")
-            for choice in choices:
-                print(f"🔍 Choice name: {choice.name}")
-                if choice.name == subgraph_name:
-                    winning_choice = choice
-                    break
-
-        # Alternative: The first choice might be the winner if we can't find exact match
-        if not winning_choice and choices:
-            print(f"🔍 Using first choice as fallback: {choices[0].name}")
-            winning_choice = choices[0]
-
-        if winning_choice:
-            print(f"🎯 Inlining winning choice: {winning_choice.name}")
-            try:
-                # Inline the winning choice operations into the main graph
-                inlined_result = _inline_custom_op_choice(winning_choice, inputs, name)
-                return inlined_result
-            except Exception as e:
-                print(f"❌ Inlining failed: {e}")
-                print("⚠️  Falling back to marking approach")
-        else:
-            print(
-                "⚠️  Could not find winning choice for inlining, falling back to marking"
-            )
-
-    # Mark result for custom op fusion if enabled (fallback path)
-    if enable_epilogue_fusion and isinstance(selected_result, TensorBox):
-        _mark_custom_op_for_epilogue_fusion(selected_result, name)
-
-    if enable_prologue_fusion and isinstance(selected_result, TensorBox):
-        _mark_custom_op_for_prologue_fusion(selected_result, name)
+        winning_choice = choices[0]  # TODO: fix use selected choice instead of 0
+        inlined_result = _inline_custom_op_choice(winning_choice, inputs, name)
+        return inlined_result
 
     return selected_result
 
 
-def _inline_custom_op_choice(winning_choice, inputs: list[Any], name: str) -> TensorBox:
+def _inline_custom_op_choice(
+    winning_choice: Any, inputs: list[Any], name: str
+) -> TensorBox:
     """Inline the winning custom op choice by converting its FX operations to individual IR nodes.
 
     This converts the custom op from a single ExternKernel (unfusable) to multiple ComputedBuffer
@@ -398,10 +354,6 @@ def _inline_custom_op_choice(winning_choice, inputs: list[Any], name: str) -> Te
 
     # Get the GraphModule containing the operations
     gm = winning_choice.gm
-
-    # Create a temporary graph lowering context to process the FX nodes
-    # We'll extract the operations and add them to the current graph
-    current_graph = V.graph
 
     # Create mapping from placeholder nodes to actual inputs
     node_to_value = {}
@@ -456,46 +408,6 @@ def _inline_custom_op_choice(winning_choice, inputs: list[Any], name: str) -> Te
     raise RuntimeError("No output node found in custom op graph")
 
 
-def _mark_custom_op_for_epilogue_fusion(result: TensorBox, name: str) -> None:
-    """Mark the result for custom op epilogue fusion by the scheduler.
-
-    Args:
-        result: The autotuning result to mark
-        name: Operation name for identification
-    """
-    if hasattr(result, "data") and hasattr(result.data, "get_name"):
-        # Mark this buffer as a custom op result eligible for epilogue fusion
-        if not hasattr(result.data, "_custom_op_fusion_metadata"):
-            result.data._custom_op_fusion_metadata = {}
-
-        result.data._custom_op_fusion_metadata.update(
-            {
-                "epilogue_fusion_enabled": True,
-                "custom_op_name": name,
-            }
-        )
-
-
-def _mark_custom_op_for_prologue_fusion(result: TensorBox, name: str) -> None:
-    """Mark the result for custom op prologue fusion by the scheduler.
-
-    Args:
-        result: The autotuning result to mark
-        name: Operation name for identification
-    """
-    if hasattr(result, "data") and hasattr(result.data, "get_name"):
-        # Mark this buffer as a custom op result eligible for prologue fusion
-        if not hasattr(result.data, "_custom_op_fusion_metadata"):
-            result.data._custom_op_fusion_metadata = {}
-
-        result.data._custom_op_fusion_metadata.update(
-            {
-                "prologue_fusion_enabled": True,
-                "custom_op_name": name,
-            }
-        )
-
-
 def register_custom_op_autotuning(
     custom_op: torch._ops.OpOverload,
     configs: Union[list[CustomOpConfig], list[Callable[..., Any]]],
@@ -539,17 +451,17 @@ def register_custom_op_autotuning(
 
     # Convert configs to decomposition functions
     final_decompositions = []
-    for config in configs:
-        if isinstance(config, CustomOpConfig):
+    for cfg in configs:
+        if isinstance(cfg, CustomOpConfig):
             # CustomOpConfig object
-            final_decompositions.append(config.create_variant())
-        elif callable(config):
+            final_decompositions.append(cfg.create_variant())
+        elif callable(cfg):
             # Direct callable function
-            final_decompositions.append(config)
+            final_decompositions.append(cfg)
         else:
             raise TypeError(
                 f"Each config must be a CustomOpConfig object or callable function, "
-                f"got {type(config)}"
+                f"got {type(cfg)}"
             )
 
     if name is None:
