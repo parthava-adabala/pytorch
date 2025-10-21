@@ -52,11 +52,6 @@ class SubgraphChoiceCaller(ir.ChoiceCaller):
         self.gm = make_fx_graph(*self.example_inputs)
         gm_original_output_strides(self.gm)
 
-        # Store fusion metadata if available
-        self.fusion_enabled = getattr(self.gm, "_fusion_applied", False)
-        self.original_name = getattr(self.gm, "_original_name", None)
-        self.fusion_type = getattr(self.gm, "_fusion_type", None)
-
         self.sym_inputs = get_symbolic_inputs(self.input_nodes)
 
     def __str__(self) -> str:

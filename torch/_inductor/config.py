@@ -96,8 +96,8 @@ fx_graph_cache: bool = Config(
     default=True,
 )
 
-# Enable inline epilogue fusion for custom ops after selecting the best choice
-enable_custom_op_epilogue_fusion: bool = False
+# Enable custom op inline fusion for decompositions
+enable_custom_op_inline_fusion: bool = False
 
 remote_gemm_autotune_cache: bool = False
 
@@ -255,12 +255,9 @@ prologue_fusion = prologue_fusion_enabled()
 # do epilogue fusions before other fusions
 epilogue_fusion_first = False
 
-# enable custom op fusion support
-enable_custom_op_epilogue_fusion = (
-    os.environ.get("TORCHINDUCTOR_CUSTOM_OP_EPILOGUE_FUSION", "1") == "1"
-)
-enable_custom_op_prologue_fusion = (
-    os.environ.get("TORCHINDUCTOR_CUSTOM_OP_PROLOGUE_FUSION", "1") == "1"
+# enable custom op inline fusion support
+enable_custom_op_inline_fusion = (
+    os.environ.get("TORCHINDUCTOR_CUSTOM_OP_INLINE_FUSION", "1") == "1"
 )
 
 # enable pattern match+replace optimizations
