@@ -11,9 +11,9 @@ on:
   schedule:
     - cron: 29 8 * * *  # about 1:29am PDT
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref_name }}-${{ github.ref_type == 'branch' && github.sha }}-${{ github.event_name == 'workflow_dispatch' }}-${{ github.event_name == 'schedule' }}
-  cancel-in-progress: false
+#concurrency: #commented out to allow for multiple workflow runs of this workflow.
+  #group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref_name }}-${{ github.ref_type == 'branch' && github.sha }}-${{ github.event_name == 'workflow_dispatch' }}-${{ github.event_name == 'schedule' }}
+  #cancel-in-progress: false
 
 permissions: read-all
 
