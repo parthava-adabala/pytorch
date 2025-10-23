@@ -760,7 +760,7 @@ if torch._C._has_mkldnn:
             or len(_other.get_inputs_that_alias_output()) > 0
         )
 
-    def _can_be_linear_binary_inplace(_other):
+    def _qlinear_binary_can_be_inplace(_other):
         if isinstance(_other.data, ir.BaseView):
             try:
                 # It can be inplaced when _other is the 2D to 3D view of a CppTemplateBuffer/QLinearPointwiseBinaryPT2E
