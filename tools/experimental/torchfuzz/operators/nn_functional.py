@@ -1025,8 +1025,10 @@ class ScaledDotProductAttentionOperator(Operator):
         if len(input_names) != 3:
             raise ValueError("SDPA requires exactly 3 inputs: query, key, value")
 
+        # Ensure dtype compatibility by converting all inputs to the expected output dtype
+        target_dtype = str(output_spec.dtype)
         query_name, key_name, value_name = input_names
-        return f"{output_name} = torch.nn.functional.scaled_dot_product_attention({query_name}, {key_name}, {value_name})"
+        return f"{output_name} = torch.nn.functional.scaled_dot_product_attention({query_name}.to({target_dtype}), {key_name}.to({target_dtype}), {value_name}.to({target_dtype}))"
 
 
 class MultiHeadAttentionForwardOperator(Operator):
