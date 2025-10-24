@@ -1,9 +1,6 @@
 leak:PyMem_RawMalloc
-leak:unicode_resize
 leak:PyObject_Malloc
-leak:PyByteArray_Resize
 leak:numpy
-leak:list_append
 leak:unicodeobject
 leak:obmalloc
 leak:gcmodule
