@@ -1388,6 +1388,8 @@ def _compile(
                 save=package is not None,
                 cache_entry=cache_entry,
             )
+            output.tracing_context.guards_context.dynamo_guards.inner = set()
+
 
         if package is not None:
             assert check_fn.guards_state is not None
