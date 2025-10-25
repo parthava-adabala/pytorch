@@ -113,6 +113,34 @@ aten = torch.ops.aten
 DispatchReturn = tuple[Callable, ViewAndMutationMeta]
 
 
+@dataclasses.dataclass
+class PartitionOutput:
+    """Output from the partition stage of the joint graph compiler."""
+
+    fw_module: torch.fx.GraphModule
+    bw_module: torch.fx.GraphModule
+    num_fw_outs_saved_for_bw: int
+    num_symints_saved_for_bw: int
+    indices_of_inps_to_detach: list[int]
+    adjusted_flat_args: list[Any]
+
+
+@dataclasses.dataclass
+class ForwardCompileOutput:
+    """Output from the forward compilation stage of the joint graph compiler."""
+
+    fwd_output_strides: Optional[list[Optional[tuple[int, ...]]]]
+    compiled_fw_func: Callable
+
+
+@dataclasses.dataclass
+class BackwardCompileOutput:
+    """Output from the backward compilation stage of the joint graph compiler."""
+
+    lazy_backward_info: AutogradLazyBackwardCompileInfo
+    compiled_bw_func: Optional[Callable]
+
+
 def _create_wrappers_for_dispatch(needs_autograd: bool) -> list[CompilerWrapper]:
     """
     Wrappers that run on every dispatch function
@@ -353,12 +381,13 @@ def aot_stage2_inference(
     assert isinstance(fw_module, GraphModule)
     _apply_tensorify_python_scalars(fw_module)
 
-    compiled_fw = _aot_stage2b_inference_compile(
+    # Create the joint graph compiler
+    compiler = JointGraphCompiler(aot_config, fw_metadata, maybe_subclass_meta)
+
+    # Inference compile
+    compiled_fw = compiler.inference_compile(
         fw_module,
         updated_flat_args,  # type: ignore[arg-type]
-        maybe_subclass_meta,
-        fw_metadata,
-        aot_config,
     )
 
     entry = _cache_inference_info(
@@ -370,9 +399,8 @@ def aot_stage2_inference(
         wrappers,
     )
 
-    return _aot_stage2c_make_inference_function(
-        aot_config,
-        fw_metadata,
+    # Make inference function
+    return compiler.make_inference_function(
         compiled_fw,
         wrappers,
         entry,
@@ -1483,6 +1511,202 @@ def _log_fw_bw_graphs(
     return fw_module_str, bw_module_str
 
 
+class JointGraphCompiler:
+    """
+    A class that organizes the joint graph compilation pipeline into distinct phases.
+    Each method represents a stage in the compilation process with dataclass inputs/outputs.
+    """
+
+    def __init__(
+        self,
+        aot_config: AOTConfig,
+        fw_metadata: ViewAndMutationMeta,
+        maybe_subclass_meta: Optional[SubclassMeta],
+    ):
+        self.aot_config = aot_config
+        self.fw_metadata = fw_metadata
+        self.maybe_subclass_meta = maybe_subclass_meta
+
+    def partition(
+        self,
+        fx_g: torch.fx.GraphModule,
+        joint_inputs: Union[list[Any], tuple[list[Any], list[Any]]],
+    ) -> PartitionOutput:
+        """
+        Partition the joint graph into a forward graph and a backward graph.
+        """
+        result = _aot_stage2a_partition(
+            fx_g, joint_inputs, self.maybe_subclass_meta, self.fw_metadata, self.aot_config
+        )
+        return PartitionOutput(
+            fw_module=result[0],
+            bw_module=result[1],
+            num_fw_outs_saved_for_bw=result[2],
+            num_symints_saved_for_bw=result[3],
+            indices_of_inps_to_detach=result[4],
+            adjusted_flat_args=result[5],
+        )
+
+    def fw_compile(
+        self,
+        fw_module: torch.fx.GraphModule,
+        adjusted_flat_args: list[Any],
+        num_fw_outs_saved_for_bw: int,
+    ) -> ForwardCompileOutput:
+        """
+        Compile the forward graph.
+        """
+        result = _aot_stage2b_fw_compile(
+            fw_module,
+            adjusted_flat_args,
+            self.maybe_subclass_meta,
+            self.fw_metadata,
+            num_fw_outs_saved_for_bw,
+            self.aot_config,
+        )
+        return ForwardCompileOutput(
+            fwd_output_strides=result[0],
+            compiled_fw_func=result[1],
+        )
+
+    def bw_compile(
+        self,
+        bw_module: torch.fx.GraphModule,
+        fwd_output_strides: Optional[list[Optional[tuple[int, ...]]]],
+        num_symints_saved_for_bw: int,
+    ) -> BackwardCompileOutput:
+        """
+        Compile the backward graph.
+        """
+        result = _aot_stage2b_bw_compile(
+            bw_module,
+            self.maybe_subclass_meta,
+            self.fw_metadata,
+            fwd_output_strides,
+            num_symints_saved_for_bw,
+            self.aot_config,
+        )
+        return BackwardCompileOutput(
+            lazy_backward_info=result[0],
+            compiled_bw_func=result[1],
+        )
+
+    def inference_compile(
+        self,
+        fw_module: torch.fx.GraphModule,
+        updated_flat_args: list[Any],
+    ) -> Callable:
+        """
+        Compile the inference graph.
+        """
+        return _aot_stage2b_inference_compile(
+            fw_module,
+            updated_flat_args,
+            self.maybe_subclass_meta,
+            self.fw_metadata,
+            self.aot_config,
+        )
+
+    def make_inference_function(
+        self,
+        compiled_fw: Callable,
+        wrappers: list[CompilerWrapper],
+        entry: Optional[GenericAOTAutogradCacheEntry],
+    ) -> tuple[Callable, ViewAndMutationMeta]:
+        """
+        Make the final inference function.
+        """
+        return _aot_stage2c_make_inference_function(
+            self.aot_config,
+            self.fw_metadata,
+            compiled_fw,
+            wrappers,
+            entry,
+        )
+
+    def make_autograd_function(
+        self,
+        flat_args: list[Any],
+        wrappers: list[CompilerWrapper],
+        compiled_fw_func: Callable,
+        compiled_bw_func: Optional[Callable],
+        lazy_backward_info: AutogradLazyBackwardCompileInfo,
+        indices_of_inps_to_detach: list[int],
+        num_symints_saved_for_bw: int,
+        try_save_cache_entry: Optional[Callable] = None,
+        entry: Optional[GenericAOTAutogradCacheEntry] = None,
+    ) -> tuple[Callable, ViewAndMutationMeta]:
+        """
+        Make the final autograd function.
+
+        Note: aot_config, fw_metadata, and maybe_subclass_meta are taken from self.
+        """
+        compiled_fn = _aot_stage2c_make_autograd_function(
+            self.aot_config,
+            flat_args,
+            self.fw_metadata,
+            self.maybe_subclass_meta,
+            wrappers,
+            compiled_fw_func,
+            compiled_bw_func,
+            lazy_backward_info,
+            try_save_cache_entry,
+            entry,
+            indices_of_inps_to_detach,
+            num_symints_saved_for_bw,
+        )
+        return compiled_fn
+
+    def make_callable(
+        self,
+        compiled_fn: Callable,
+        gm: torch.fx.GraphModule,
+        params_spec: list[str],
+        buffers_spec: list[str],
+        in_spec: pytree.TreeSpec,
+        out_spec: pytree.TreeSpec,
+    ) -> Callable:
+        """
+        Wrap the compiled function to provide a cleaner calling convention.
+
+        The compiled function expects flat args: [*params, *buffers, *flat_inputs]
+        This wrapper allows calling with just: (*inputs) where inputs can be structured
+
+        Args:
+            compiled_fn: The compiled function from make_autograd_function
+            gm: The graph module from _dynamo_graph_capture_for_export
+                (should have _restore_state_dict called on it)
+            params_spec: List of parameter FQNs in order (from JointWithDescriptors)
+            buffers_spec: List of buffer FQNs in order (from JointWithDescriptors)
+            in_spec: Input pytree spec for flattening structured inputs
+            out_spec: Output pytree spec for unflattening structured outputs
+
+        Returns:
+            A callable that takes structured user inputs and returns structured outputs
+        """
+        # Get parameter and buffer dictionaries from graph module
+        params_dict = dict(gm.named_parameters())
+        buffers_dict = dict(gm.named_buffers())
+
+        # Look up params and buffers by FQN in the order specified by specs
+        params = [params_dict[fqn] for fqn in params_spec]
+        buffers = [buffers_dict[fqn] for fqn in buffers_spec]
+
+        def wrapper(*args, **kwargs):
+            # Flatten the inputs using in_spec to handle structured inputs (dicts, tuples, etc.)
+            # The in_spec includes params/buffers/inputs, so we reconstruct the full input structure
+            # and flatten just the user inputs portion
+            user_inputs_flat, _ = pytree.tree_flatten((args, kwargs))
+            # Construct the full flat args list
+            flat_args = [*params, *buffers, *user_inputs_flat]
+            # Call the compiled function
+            flat_outputs = compiled_fn(flat_args)
+            # Unflatten outputs using out_spec to handle structured outputs
+            return pytree.tree_unflatten(flat_outputs, out_spec)
+
+        return wrapper
+
+
 def _aot_stage2a_partition(
     fx_g: torch.fx.GraphModule,
     joint_inputs: Union[list[Any], tuple[list[Any], list[Any]]],
@@ -1891,73 +2115,65 @@ def aot_stage2_autograd(
 
     _apply_tensorify_python_scalars(fx_g)
 
-    (
-        fw_module,
-        bw_module,
-        num_fw_outs_saved_for_bw,
-        num_symints_saved_for_bw,
-        _indices_of_inps_to_detach,
-        adjusted_flat_args,
-    ) = _aot_stage2a_partition(
+    # Create the joint graph compiler
+    compiler = JointGraphCompiler(aot_config, fw_metadata, maybe_subclass_meta)
+
+    # Partition
+    partition_output = compiler.partition(
         fx_g,
         aot_graph_capture.updated_flat_args,
-        maybe_subclass_meta,
-        fw_metadata,
-        aot_config,
     )
 
     fw_module_str, bw_module_str = _log_fw_bw_graphs(
-        fw_module, bw_module, maybe_subclass_meta, fw_metadata, aot_config
-    )
-
-    fwd_output_strides, compiled_fw_func = _aot_stage2b_fw_compile(
-        fw_module,
-        adjusted_flat_args,
+        partition_output.fw_module,
+        partition_output.bw_module,
         maybe_subclass_meta,
         fw_metadata,
-        num_fw_outs_saved_for_bw,
         aot_config,
     )
 
-    lazy_backward_info, compiled_bw_func = _aot_stage2b_bw_compile(
-        bw_module,
-        maybe_subclass_meta,
-        fw_metadata,
-        fwd_output_strides,
-        num_symints_saved_for_bw,
-        aot_config,
+    # Forward compile
+    fw_compile_output = compiler.fw_compile(
+        partition_output.fw_module,
+        partition_output.adjusted_flat_args,
+        partition_output.num_fw_outs_saved_for_bw,
+    )
+
+    # Backward compile
+    bw_compile_output = compiler.bw_compile(
+        partition_output.bw_module,
+        fw_compile_output.fwd_output_strides,
+        partition_output.num_symints_saved_for_bw,
     )
 
     try_save_cache_entry, entry = _cache_autograd_info(
         aot_config,
         aot_state.flat_args,
-        compiled_fw_func,
-        compiled_bw_func,
+        fw_compile_output.compiled_fw_func,
+        bw_compile_output.compiled_bw_func,
         fw_module_str,
         bw_module_str,
         joint_graph_str,
         aot_graph_capture.wrappers,
         maybe_subclass_meta,
         fw_metadata,
-        num_fw_outs_saved_for_bw,
-        _indices_of_inps_to_detach,
-        num_symints_saved_for_bw,
-        bw_module,
+        partition_output.num_fw_outs_saved_for_bw,
+        partition_output.indices_of_inps_to_detach,
+        partition_output.num_symints_saved_for_bw,
+        partition_output.bw_module,
     )
 
-    return _aot_stage2c_make_autograd_function(
-        aot_config,
-        aot_state.flat_args,
-        fw_metadata,
-        maybe_subclass_meta,
-        aot_graph_capture.wrappers,
-        compiled_fw_func,
-        compiled_bw_func,
-        lazy_backward_info,
-        try_save_cache_entry,
-        entry,
-        _indices_of_inps_to_detach,
-        num_symints_saved_for_bw,
+    # Make autograd function
+    return compiler.make_autograd_function(
+        flat_args=aot_state.flat_args,
+        wrappers=aot_graph_capture.wrappers,
+        compiled_fw_func=fw_compile_output.compiled_fw_func,
+        compiled_bw_func=bw_compile_output.compiled_bw_func,
+        lazy_backward_info=bw_compile_output.lazy_backward_info,
+        indices_of_inps_to_detach=partition_output.indices_of_inps_to_detach,
+        num_symints_saved_for_bw=partition_output.num_symints_saved_for_bw,
+        try_save_cache_entry=try_save_cache_entry,
+        entry=entry,
     )
 
 
