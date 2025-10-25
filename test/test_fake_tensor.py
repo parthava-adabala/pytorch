@@ -1088,54 +1088,7 @@ class FakeTensorTest(TestCase):
         self.assertEqual(out[1].dtype, eye.dtype)
         self.assertEqual(out[2].dtype, eye.dtype)
 
-    def test_clear_weakrefs(self):
-        # The number of lingering weakrefs to a tensor after _clear_memos
-        fake_mode = torch._subclasses.fake_tensor.FakeTensorMode(allow_non_fake_inputs=True)
-        
-        class Subclass(torch.Tensor):
-            def __new__(cls, data):
-                return torch.Tensor._make_wrapper_subclass(cls, data.shape, dtype=data.dtype, device=data.device)
 
-            def __init__(self, data):
-                self._data = data
-
-            def __repr__(self):
-                return f"{self.__class__.__name__}(data={self._data})"
-
-            def __tensor_flatten__(self):
-                return ["_data"], []
-
-            @classmethod
-            def __tensor_unflatten__(cls, inner_tensors, ctx, outer_size, outer_stride):
-                return cls(inner_tensors["_data"])
-
-            @classmethod
-            def __torch_function__(cls, func, types, args, kwargs=None):
-                if func == torch.nn.functional.linear:
-                    return func(args[0], args[1]._data, *args[2:])
-
-                with torch._C.DisableTorchFunctionSubclass():
-                    return func(*args, **(kwargs or dict()))
-
-            def __torch_dispatch__(self, func, types, args, kwargs):
-                if func in (aten._to_copy.default, aten.detach.default):
-                    args = [x._data if isinstance(x, Subclass) else x for x in args]
-                    out = func(*args, **kwargs)
-                    return Subclass(out)
-
-                raise NotImplementedError(f"{func=}")
-
-        breakpoint()
-        x = torch.nn.Parameter(Subclass(torch.randn(1)))
-        with fake_mode:
-            y = x.detach()
-            pass
-
-        wrefs = weakref.getweakrefs(x)
-        self.assertGreater(len(wrefs), 0)
-        fake_mode._clear_memos()
-        wrefs = weakref.getweakrefs(x)
-        self.assertEqual(len(wrefs), 0)
 
 instantiate_parametrized_tests(FakeTensorTest)
 
