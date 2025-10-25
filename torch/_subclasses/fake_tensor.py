@@ -368,6 +368,7 @@ class FakeTensorConverter:
 
                     assert isinstance(symbolic_context, StatefulSymbolicContext)
                     source = symbolic_context.tensor_source
+
         maybe_memo = self._get_memo(t)
         if maybe_memo is not None:
             return maybe_memo
