@@ -39,7 +39,7 @@ char* _dlerror() {
 
 typedef void* kernel_ptr_t;
 typedef void (
-    *launcher_ptr_t)(uint32_t, uint32_t, uint32_t, void**, kernel_ptr_t);
+    *launcher_ptr_t)(uint32_t, uint32_t, uint32_t, int, void**, kernel_ptr_t);
 
 struct DlcloseDeleter {
   void operator()(void* p) const {
@@ -111,7 +111,7 @@ void CpuTritonKernelManager::load() {
       _dlerror());
 
   launcher_fn_ =
-      reinterpret_cast<launcher_ptr_t>(_dlsym(launcher_handle_.get(), "run"));
+      reinterpret_cast<launcher_ptr_t>(_dlsym(launcher_handle_.get(), "run_from_nativert"));
   TORCH_CHECK(launcher_fn_ != nullptr, "could not dlsym run: ", _dlerror());
 }
 
@@ -119,10 +119,11 @@ void CpuTritonKernelManager::launch(
     const LaunchParams& launch_params,
     void** args /* { ...inputs, output }*/) {
   load();
-  launcher_fn_(
+    launcher_fn_(
       launch_params.grid_dims.x,
       launch_params.grid_dims.y,
       launch_params.grid_dims.z,
+      launch_params.num_cpu_threads,
       args,
       kernel_fn_);
 }

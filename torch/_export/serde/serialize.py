@@ -739,11 +739,7 @@ class GraphModuleSerializer(metaclass=Final):
                 output_keys = meta_val.keys()
                 output_indices = []
 
-                constexpr_keys = set()
-                for p in kernel.params:
-                    if p.is_constexpr:
-                        constexpr_keys.add(p.name)
-
+                constexpr_keys = {p.name for p in kernel.params if p.is_constexpr}
                 found_constexpr = False
                 args_new = ()
                 i = 0
@@ -772,6 +768,7 @@ class GraphModuleSerializer(metaclass=Final):
                     "grid": node.kwargs["grid"][0],
                     "output_indices": output_indices,
                     "num_warps": kernel_cache_metadata.num_warps,
+                    "num_cpu_threads": kernel_cache_metadata.num_cpu_threads,
                 }
 
                 if hasattr(kernel_cache_metadata, "shared"):

@@ -1728,6 +1728,7 @@ class TritonHOPifier:
             "num_ctas",
             "num_consumer_groups",
             "num_buffers_warp_spec",
+            "num_cpu_threads",
         }
 
         # move special config names to configs out of kwargs
