@@ -534,6 +534,11 @@ max_autotune_flex_search_space: Literal["DEFAULT", "EXHAUSTIVE"] = os.environ.ge
     "TORCHINDUCTOR_MAX_AUTOTUNE_FLEX_SEARCH_SPACE", "DEFAULT"
 ).upper()  # type: ignore[assignment]
 
+
+# Fall back to ATen for all ops by default, except for fx nodes with
+# "compile_with_inductor" in node.meta["custom"]
+fallback_by_default = False
+
 # DEPRECATED. This setting is ignored.
 autotune_fallback_to_aten = False
 

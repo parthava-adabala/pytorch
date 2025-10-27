@@ -4727,6 +4727,7 @@ class Scheduler:
             operator = ir_node.op_overload
             if operator is not None and operator in _custom_should_partition_fns:
                 assert isinstance(operator, torch._ops.OpOverload)
+                return True
                 should_partition_fn = _custom_should_partition_fns[operator]
                 fx_node = ir_node.get_origin_node()
                 assert fx_node is not None

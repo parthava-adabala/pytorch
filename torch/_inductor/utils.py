@@ -709,6 +709,39 @@ def cache_property_on_self(fn: Callable[P, RV]) -> CachedMethod[P, RV]:
     return cache_on_self(fn)
 
 
+def cache_on_self_and_args(
+    fn: Callable[Concatenate[Any, ...], RV],
+) -> CachedMethod[P, RV]:
+
+    @functools.wraps(fn)
+    def wrapper(self, unbacked_only=False):
+        key: str = f"__{fn.__name__}_{type(self).__name__}_{unbacked_only}_cache"
+        if not hasattr(self, key):
+            setattr(self, key, fn(self, unbacked_only))
+        return getattr(self, key)
+
+
+
+
+        # cached = getattr(self, key, None)
+        # if cached is None:
+
+        #     @functools.lru_cache
+        #     def inner(*a, **k):
+        #         return fn(self, *a, **k)
+
+        #     setattr(self, key, inner)
+        #     cached = inner
+        # return cached(*args, **kwargs)
+
+    def clear_cache(self: Any) -> None:
+        if hasattr(self, key):
+            delattr(self, key)
+
+    wrapper.clear_cache = clear_cache  # type: ignore[attr-defined]
+    return wrapper  # type: ignore[return-value]
+
+
 def aggregate_origins(
     node_schedule: Union[Sequence[BaseSchedulerNode], ExternKernel],
 ) -> OrderedSet[Node]:
