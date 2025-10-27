@@ -21,12 +21,19 @@ using stream_set = ska::flat_hash_set<xpu::XPUStream>;
 struct Block;
 typedef bool (*Comparison)(const Block*, const Block*);
 bool BlockComparatorSize(const Block* a, const Block* b);
+bool BlockComparatorAddress(const Block* a, const Block* b);
 
 struct BlockPool {
-  BlockPool(bool small) : blocks(BlockComparatorSize), is_small(small) {}
+  BlockPool(bool small)
+      : blocks(BlockComparatorSize),
+        unmapped(BlockComparatorAddress),
+        is_small(small) {}
   std::set<Block*, Comparison> blocks;
+  std::set<Block*, Comparison> unmapped;
   const bool is_small;
 };
+
+struct ExpandableSegment;
 
 struct Block {
   DeviceIndex device;
@@ -37,9 +44,11 @@ struct Block {
   BlockPool* pool{nullptr}; // owning memory pool
   void* ptr{nullptr}; // memory address
   bool allocated{false}; // in-use flag
+  bool mapped{true}; // True if this Block is backed by physical pages
   Block* prev{nullptr}; // prev block if split from a larger allocation
   Block* next{nullptr}; // next block if split from a larger allocation
   int event_count{0}; // number of outstanding XPU events
+  ExpandableSegment* expandable_segment{nullptr}; // owning expandable segment
 
   Block(
       DeviceIndex device,
@@ -66,6 +75,20 @@ struct Block {
   bool is_split() const {
     return (prev != nullptr) || (next != nullptr);
   }
+
+  // Inserts this block between two existing blocks with [before, this, after].
+  void splice(Block* before, Block* after) {
+    if (before) {
+      TORCH_INTERNAL_ASSERT(before->next == after);
+      before->next = this;
+    }
+    prev = before;
+    if (after) {
+      TORCH_INTERNAL_ASSERT(after->prev == before);
+      after->prev = this;
+    }
+    next = after;
+  }
 };
 
 bool BlockComparatorSize(const Block* a, const Block* b) {
@@ -75,6 +98,15 @@ bool BlockComparatorSize(const Block* a, const Block* b) {
   }
   if (a->size != b->size) {
     return a->size < b->size;
+  }
+  return reinterpret_cast<uintptr_t>(a->ptr) <
+      reinterpret_cast<uintptr_t>(b->ptr);
+}
+
+bool BlockComparatorAddress(const Block* a, const Block* b) {
+  if (a->queue != b->queue) {
+    return reinterpret_cast<uintptr_t>(a->queue) <
+        reinterpret_cast<uintptr_t>(b->queue);
   }
   return reinterpret_cast<uintptr_t>(a->ptr) <
       reinterpret_cast<uintptr_t>(b->ptr);
@@ -339,10 +371,12 @@ class DeviceCachingAllocator {
   ska::flat_hash_map<xpu::XPUStream, std::deque<std::pair<sycl::event, Block*>>>
       xpu_events;
   DeviceIndex device_index;
+  std::vector<ExpandableSegment*> expandable_segments;
+  std::vector<c10::DeviceIndex> devices_with_peer_access;
 
   size_t try_merge_blocks(Block* dst, Block* src, BlockPool& pool) {
     if (!src || src->allocated || src->event_count > 0 ||
-        !src->stream_uses.empty()) {
+        !src->stream_uses.empty() || dst->mapped != src->mapped) {
       return 0;
     }
 
@@ -361,7 +395,8 @@ class DeviceCachingAllocator {
     }
     const size_t subsumed_size = src->size;
     dst->size += subsumed_size;
-    auto erased = pool.blocks.erase(src);
+    auto erased =
+        src->mapped ? pool.blocks.erase(src) : pool.unmapped.erase(src);
     TORCH_INTERNAL_ASSERT_DEBUG_ONLY(erased == 1);
     delete src;
 
@@ -444,11 +479,168 @@ class DeviceCachingAllocator {
     }
   }
 
+  // Finds the first (lowest-address) block in any segment that has sufficient
+  // contiguous free virtual address space to satisfy `size`. The available
+  // space may span multiple adjacent blocks, which can include both free and
+  // unmapped segments.
+  Block* find_expandable_block(
+      c10::DeviceIndex device,
+      sycl::queue* queue,
+      BlockPool* pool,
+      size_t size) {
+    Block key(device, queue, 0);
+
+    auto allocatable = [](Block* b) {
+      return b && !b->allocated && b->event_count == 0 &&
+          b->stream_uses.empty();
+    };
+    auto has_available_address_space = [&](Block* b) {
+      size_t bytes = 0;
+      while (bytes < size && allocatable(b)) {
+        bytes += b->size;
+        b = b->next;
+      }
+      return bytes >= size;
+    };
+    for (auto it = pool->unmapped.lower_bound(&key);
+         it != pool->unmapped.end() && (*it)->queue == queue;
+         ++it) {
+      Block* c = *it;
+      // Why? The unmapped block might have a free mapped block right before it.
+      // By starting from the previous block, we can use both:
+      // [Free Mapped Block] + [Unmapped Block] = More contiguous space
+      if (allocatable(c->prev)) {
+        c = c->prev;
+      }
+      if (has_available_address_space(c)) {
+        return c;
+      }
+    }
+    auto segment_size = pool->is_small ? kSmallBuffer : kLargeBuffer;
+    expandable_segments.emplace_back(new ExpandableSegment(
+        device, queue, segment_size, devices_with_peer_access));
+
+    ExpandableSegment* es = expandable_segments.back();
+    Block* candidate = new Block(device, queue, es->size(), pool, es->ptr());
+    candidate->mapped = false;
+    candidate->expandable_segment = es;
+    pool->unmapped.insert(candidate);
+    return candidate;
+  }
+
+  bool map_block(Block* to_map, size_t size) {
+    TORCH_INTERNAL_ASSERT(!to_map->mapped && size <= to_map->size);
+    auto mapped_range =
+        to_map->expandable_segment->map(SegmentRange{to_map->ptr, size});
+    // failed to map the memory
+    if (mapped_range.size == 0) {
+      return false;
+    }
+    TORCH_INTERNAL_ASSERT(
+        mapped_range.ptr == to_map->ptr && mapped_range.size >= size);
+
+    BlockPool& pool = *to_map->pool;
+    pool.unmapped.erase(to_map);
+    to_map->mapped = true;
+
+    if (mapped_range.size < to_map->size) {
+      // to_map -> remaining -> to_map->next(?)
+      Block* remaining = new Block(
+          to_map->device,
+          to_map->queue,
+          to_map->size - mapped_range.size,
+          &pool,
+          static_cast<char*>(to_map->ptr) + mapped_range.size);
+      remaining->mapped = false;
+      remaining->expandable_segment = to_map->expandable_segment;
+      remaining->splice(to_map, to_map->next);
+      pool.unmapped.insert(remaining);
+      to_map->size = mapped_range.size;
+    }
+
+    try_merge_blocks(to_map, to_map->prev, pool);
+    try_merge_blocks(to_map, to_map->next, pool);
+
+    pool.blocks.insert(to_map);
+
+    // update statistics
+    StatTypes stat_types = get_stat_types_for_pool(*to_map->pool);
+    for_each_selected_stat_type(stat_types, [&](size_t stat_type) {
+      stats.reserved_bytes[stat_type].increase(mapped_range.size);
+    });
+
+    return true;
+  }
+
+  Block* try_allocate_expandable_block(
+      c10::DeviceIndex device,
+      sycl::queue* queue,
+      BlockPool* pool,
+      size_t size) {
+    Block* candidate = find_expandable_block(device, queue, pool, size);
+    // Candidate is now a list free/unmapped blocks with at least size room:
+    // unmapped -> null
+    // unmapped -> free -> *
+    // free -> unmapped -> *
+
+    if (!candidate->mapped &&
+        !map_block(candidate, std::min(candidate->size, size))) {
+      return nullptr;
+    }
+    TORCH_INTERNAL_ASSERT(candidate->mapped);
+
+    while (candidate->size < size) {
+      // invariant: free -> unmapped -> *
+      // map_block will map some of unmapped and merge with free
+      auto remaining = size - candidate->size;
+      auto new_candidate = candidate->next;
+      if (!map_block(
+              new_candidate, std::min(remaining, candidate->next->size))) {
+        return nullptr;
+      }
+      candidate = new_candidate;
+    }
+    pool->blocks.erase(candidate);
+    return candidate;
+  }
+
   bool get_free_block(AllocParams& p) {
     BlockPool& pool = *p.pool;
     auto it = pool.blocks.lower_bound(&p.search_key);
     if (it == pool.blocks.end() || (*it)->queue != p.queue()) {
       return false;
+    }
+    if ((*it)->expandable_segment) {
+      if (AcceleratorAllocatorConfig::use_expandable_segments()) {
+        // if we are allocated to the part of the block that is expandable
+        // for the purposes of "best fit" we consider its size to be the size it
+        // can expand to, not the size it currently is.
+        auto expandable_size = [](Block* b) {
+          // b->next may belong to pool.unmapped (reserved but not mapped)
+          return b->size + (b->next && !b->next->mapped ? b->next->size : 0);
+        };
+        auto next = it;
+        next++;
+        // Looks for the best fit block with expandable size.
+        while ((*it)->expandable_segment && next != pool.blocks.end() &&
+               (*next)->queue == p.queue() &&
+               expandable_size(*next) < expandable_size(*it)) {
+          it = next++;
+        }
+      } else {
+        // Rarely expandable segments has been turned off after we have
+        // already allocated some blocks as expandable. For instance,
+        // since we cannot share expandable memory via IPC, someone might
+        // temporarily disable it. In this case we need to honor this request
+        // by only finding non-expandable blocks
+        do {
+          it++;
+        } while (it != pool.blocks.end() && (*it)->expandable_segment &&
+                 (*it)->queue == p.queue());
+        if (it == pool.blocks.end() || (*it)->queue != p.queue()) {
+          return false;
+        }
+      }
     }
     p.block = *it;
     pool.blocks.erase(it);
@@ -460,6 +652,11 @@ class DeviceCachingAllocator {
     auto device = p.device();
     if (isRetry) {
       stats.num_alloc_retries += 1;
+    }
+    if (AcceleratorAllocatorConfig::use_expandable_segments()) {
+      p.block =
+          try_allocate_expandable_block(device, p.queue(), p.pool, p.size());
+      return bool(p.block);
     }
     void* ptr = sycl::aligned_alloc_device(
         kDeviceAlignment,
@@ -473,6 +670,7 @@ class DeviceCachingAllocator {
     for_each_selected_stat_type(p.stat_types, [&](size_t stat_type) {
       stats.reserved_bytes[stat_type].increase(size);
     });
+    TORCH_INTERNAL_ASSERT(p.block != nullptr && p.block->ptr != nullptr);
     return true;
   }
 
@@ -491,6 +689,22 @@ class DeviceCachingAllocator {
     xpu_events.clear();
   }
 
+  void release_expandable_segment(Block* block) {
+    TORCH_INTERNAL_ASSERT(
+        block->size == block->expandable_segment->size(),
+        "block disagrees with segment");
+    TORCH_INTERNAL_ASSERT(!block->mapped);
+    auto it = std::find(
+        expandable_segments.begin(),
+        expandable_segments.end(),
+        block->expandable_segment);
+    TORCH_INTERNAL_ASSERT(it != expandable_segments.end());
+    expandable_segments.erase(it);
+    block->pool->unmapped.erase(block);
+    delete block->expandable_segment;
+    delete block;
+  }
+
   void release_block(Block* block) {
     /*
      * Note [Safe to Free Blocks on BlockPool]
@@ -501,6 +715,7 @@ class DeviceCachingAllocator {
      * We have to do a device-level synchronization before free these blocks to
      * guarantee that all kernels can access to the blocks have finished.
      */
+    TORCH_INTERNAL_ASSERT(!block->expandable_segment);
     sycl::free(block->ptr, xpu::get_device_context());
     auto* pool = block->pool;
     pool->blocks.erase(block);
@@ -513,13 +728,73 @@ class DeviceCachingAllocator {
     delete block;
   }
 
+  void unmap_block(Block* block) {
+    auto unmapped =
+        block->expandable_segment->unmap(SegmentRange{block->ptr, block->size});
+    if (unmapped.size == 0) {
+      return;
+    }
+    block->pool->blocks.erase(block);
+
+    ptrdiff_t before_size = unmapped.ptr - static_cast<char*>(block->ptr);
+    if (before_size > 0) {
+      // prev? -> before_free -> block
+      Block* before_free = new Block(
+          block->device, block->queue, before_size, block->pool, block->ptr);
+      before_free->expandable_segment = block->expandable_segment;
+      before_free->splice(block->prev, block);
+      block->pool->blocks.insert(before_free);
+    }
+
+    auto after_size = block->size - (before_size + unmapped.size);
+    if (after_size > 0) {
+      // block -> after_free -> next?
+      Block* after_free = new Block(
+          block->device,
+          block->queue,
+          after_size,
+          block->pool,
+          unmapped.ptr + unmapped.size);
+      after_free->expandable_segment = block->expandable_segment;
+      after_free->splice(block, block->next);
+      block->pool->blocks.insert(after_free);
+    }
+
+    block->ptr = unmapped.ptr;
+    block->size = unmapped.size;
+    block->mapped = false;
+
+    try_merge_blocks(block, block->prev, *block->pool);
+    try_merge_blocks(block, block->next, *block->pool);
+    block->pool->unmapped.insert(block);
+
+    StatTypes stat_types = get_stat_types_for_pool(*block->pool);
+    for_each_selected_stat_type(stat_types, [&](size_t stat_type) {
+      stats.reserved_bytes[stat_type].decrease(unmapped.size);
+    });
+  }
+
   void release_blocks(BlockPool& pool) {
+    std::vector<Block*> to_unmap;
+    // Frees all non-split blocks in the given pool.
     auto it = pool.blocks.begin();
     while (it != pool.blocks.end()) {
       Block* block = *it;
       ++it;
-      if (!block->prev && !block->next) {
+      if (block->expandable_segment) {
+        // Unmapping modifies the free pool, so collect items to free first to
+        // avoid iterator invalidation.
+        to_unmap.push_back(block);
+      } else if (!block->prev && !block->next) {
         release_block(block);
+      }
+    }
+    for (Block* block : to_unmap) {
+      unmap_block(block);
+      // After unmapping, expandable segment blocks with no neighbors are also
+      // released.
+      if (!block->prev && !block->next) {
+        release_expandable_segment(block);
       }
     }
   }
@@ -536,7 +811,8 @@ class DeviceCachingAllocator {
 
   bool should_split(const Block* block, size_t size) {
     size_t remaining = block->size - size;
-    if (block->pool->is_small) {
+    if (block->pool->is_small ||
+        AcceleratorAllocatorConfig::use_expandable_segments()) {
       return remaining >= kMinBlockSize;
     } else {
       return remaining > kSmallSize;
@@ -569,6 +845,7 @@ class DeviceCachingAllocator {
       remaining = block;
 
       block = new Block(device, queue, size, pool, block->ptr);
+      block->expandable_segment = remaining->expandable_segment;
       block->prev = remaining->prev;
       if (block->prev) {
         block->prev->next = block;
